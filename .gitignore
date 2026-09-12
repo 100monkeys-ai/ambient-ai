@@ -18,3 +18,4 @@ dist/
 # Local sender store (phone numbers and tokens)
 ambient.db
 *.db
+worktrees/

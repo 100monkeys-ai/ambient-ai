@@ -11,6 +11,7 @@ import asyncio
 from ambient_ai.gateway.sms import send_sms
 from ambient_ai.identity import lookup_sender, upsert_sender
 from ambient_ai.identity.magic_link import portal_link
+from ambient_ai.memory import schedule_extraction, transcript_of
 from ambient_ai.orchestration.run import run_mention
 from ambient_ai.telemetry import log, redact
 
@@ -34,3 +35,4 @@ def handle_mention(sender: str, body: str) -> None:
         return
     reply = asyncio.run(run_mention(profile, body))
     send_sms(sender, reply)
+    schedule_extraction(profile, transcript_of(body, reply))
