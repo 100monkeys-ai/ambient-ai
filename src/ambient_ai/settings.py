@@ -16,6 +16,12 @@ MENTION = "@agent"
 MAGIC_LINK_TTL_SECONDS = 15 * 60
 """How long a texted magic link opens the portal."""
 
+SMS_REPLY_MAX_CHARS = 480
+"""Hard cap on a synthesised reply: three SMS segments, plain text."""
+
+OUTBOUND_TIMEOUT_SECONDS = 10.0
+"""Every Cortex MCP and GitHub REST call on the request path times out here."""
+
 ENV_NAMES = (
     "TWILIO_ACCOUNT_SID",
     "TWILIO_AUTH_TOKEN",
@@ -26,6 +32,7 @@ ENV_NAMES = (
     "OPENAI_API_KEY",
     "CORTEX_MCP_URL",
     "CORTEX_MCP_TOKEN",
+    "CORTEX_WORKSPACE",
 )
 
 
