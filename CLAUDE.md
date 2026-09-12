@@ -23,13 +23,13 @@ One package per bounded context under `src/ambient_ai/`:
 
 | Package | Owns |
 |---|---|
-| `gateway/` | FastAPI app factory and `POST /webhook/sms`. Drops messages without `@agent` with an empty TwiML `<Response>`. |
-| `identity/` | Sender lookup by phone number and JIT onboarding (Twilio Verify OTP). |
+| `gateway/` | FastAPI app factory, `POST /webhook/sms` (empty TwiML `<Response>` at once; `@agent` messages go to a background task), `handle_mention()` in `handlers.py`, `send_sms()` in `sms.py`, and the portal at `/portal/{token}`. |
+| `identity/` | SQLite sender store keyed by E.164 number, and the signed magic link that proves a number. |
 | `orchestration/` | The tool-less orchestrator that emits a `Plan`, and the ephemeral sub-agent factory (Context, Execution). |
 | `memory/` | The asynchronous memory extractor: `novel_facts`, `preferences`, `should_update`. |
-| `tools/` | Per-sender tool credentials; a mock GitHub token store for the hackathon. |
+| `tools/` | Per-sender tool credentials: the GitHub token the sender pasted in the portal. |
 | `telemetry/` | In-process event log for the live dashboard, and `redact()`. |
-| `settings.py` | Environment variable names, `LLM_PROVIDER`, `LLM_MODEL_ID`, `MENTION`. |
+| `settings.py` | Environment variable names, `LLM_PROVIDER`, `LLM_MODEL_ID`, `MENTION`, `DB_PATH`/`PORTAL_BASE_URL` defaults. |
 
 `tests/` mirrors the packages. `SOURCES/` holds the two source PDFs that define the product.
 
@@ -49,15 +49,15 @@ CI (`.github/workflows/ci.yml`) runs the same install, `ruff check .`, and `pyte
 
 ## What is real and what is stubbed
 
-Real: the app factory, the `@agent` filter on the webhook, the telemetry event log, `redact()`, the pydantic models (`Plan`, `PlanStep`, `MemoryExtraction`, `SenderProfile`).
+Real: the app factory, the `@agent` filter on the webhook and its background hand-off, the SQLite sender store, the signed magic link and portal, `send_sms()` over the Twilio Messages API (10 s timeout; `FAKE_SMS_OUTBOX=<file>` records sends to a file instead), the telemetry event log, `redact()`, the pydantic models (`Plan`, `PlanStep`, `MemoryExtraction`, `SenderProfile`).
 
-Stubbed: everything that talks to Twilio, an LLM, Cortex, or GitHub. Every unimplemented function raises `NotImplementedError` with a one-line message. Do not replace a stub with a placeholder that looks like real behaviour; replace it with the real thing or leave it raising.
+Stubbed: everything that talks to an LLM, Cortex, or GitHub; `handle_mention()` answers a connected sender with a fixed acknowledgement until orchestration lands. Every unimplemented function raises `NotImplementedError` with a one-line message. Do not replace a stub with a placeholder that looks like real behaviour; replace it with the real thing or leave it raising.
 
 ## Lifecycle rules
 
 - **Pre-alpha, one surface.** No backward-compatibility shims, no deprecated code paths, no migrations for internal formats. Change the code, its callers, and its tests in one commit.
-- **Sender data is the one carve-out.** Phone numbers, OTP state, tool tokens, and extracted memories are never logged in full, never shown on the dashboard, and never committed. Pass phone numbers through `telemetry.redact()` before they enter an event. `.env` is git-ignored; `.env.example` carries names only.
-- **The LLM defaults to Anthropic.** The model id is the single constant `LLM_MODEL_ID` in `settings.py`.
+- **Sender data is the one carve-out.** Phone numbers, magic-link state, tool tokens, and extracted memories are never logged in full, never shown on the dashboard, and never committed. Pass phone numbers through `telemetry.redact()` before they enter an event. `.env` and `ambient.db` are git-ignored; `.env.example` carries names only.
+- **The LLM is OpenAI** (ruled by the architect 2026-09-12 19:30 UTC). The model id is the single constant `LLM_MODEL_ID` in `settings.py`; the key is `OPENAI_API_KEY`.
 - **Stage by explicit path.** Never `git add -A`; never `git stash`.
 - **Human-only floor.** Deployments, the live Twilio number, the public webhook host, shared secrets, repository visibility, and releases belong to Jeshua. Stop and report rather than work around them.
 

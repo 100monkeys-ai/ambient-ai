@@ -14,3 +14,7 @@ dist/
 # Windows download markers (WSL)
 *.Zone.Identifier
 *:Zone.Identifier
+
+# Local sender store (phone numbers and tokens)
+ambient.db
+*.db

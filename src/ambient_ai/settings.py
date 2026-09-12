@@ -6,25 +6,47 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-LLM_PROVIDER = "anthropic"
-LLM_MODEL_ID = "claude-sonnet-5"
+LLM_PROVIDER = "openai"
+LLM_MODEL_ID = "gpt-4o-mini"
 """The single model id used by every agent. Change it here, nowhere else."""
 
 MENTION = "@agent"
 """The token that wakes the agent. Messages without it are dropped at the gateway."""
 
+MAGIC_LINK_TTL_SECONDS = 15 * 60
+"""How long a texted magic link opens the portal."""
+
 ENV_NAMES = (
     "TWILIO_ACCOUNT_SID",
     "TWILIO_AUTH_TOKEN",
     "TWILIO_PHONE_NUMBER",
-    "TWILIO_VERIFY_SERVICE_SID",
-    "ANTHROPIC_API_KEY",
+    "APP_SECRET",
+    "PORTAL_BASE_URL",
+    "DB_PATH",
+    "OPENAI_API_KEY",
     "CORTEX_MCP_URL",
     "CORTEX_MCP_TOKEN",
-    "GITHUB_TOKEN",
 )
 
 
 def env(name: str) -> str | None:
     """Return an environment variable by name, or None when unset."""
     return os.environ.get(name)
+
+
+def require(name: str) -> str:
+    """Return an environment variable or raise naming the missing variable, never a value."""
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"{name} is not set; add it to .env")
+    return value
+
+
+def db_path() -> str:
+    """SQLite file holding sender records. Git-ignored; defaults to ./ambient.db."""
+    return env("DB_PATH") or "./ambient.db"
+
+
+def portal_base_url() -> str:
+    """Where magic links point. The public tunnel host in a demo; localhost otherwise."""
+    return (env("PORTAL_BASE_URL") or "http://localhost:8000").rstrip("/")

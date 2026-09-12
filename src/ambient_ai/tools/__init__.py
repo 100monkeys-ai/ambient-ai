@@ -1,3 +1,3 @@
-from ambient_ai.tools.github import MockGitHubTokenStore
+from ambient_ai.tools.github import github_token_for
 
-__all__ = ["MockGitHubTokenStore"]
+__all__ = ["github_token_for"]
