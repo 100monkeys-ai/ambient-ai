@@ -19,7 +19,7 @@ from ambient_ai.identity import lookup_sender, set_token, upsert_sender
 from ambient_ai.identity.senders import SenderProfile
 from ambient_ai.orchestration.run import CREDENTIALS_PRIVATE_ONLY_REPLY, run_mention
 from ambient_ai.telemetry import log
-from ambient_ai.tools import credentials
+from ambient_ai.tools import github
 
 USER_ID = 123456789
 PHONE = "+15551234567"
@@ -76,7 +76,7 @@ def github_user(monkeypatch, *, status: int = 200, login: str = "octocat") -> li
             return httpx.Response(status, json={"message": "Bad credentials"})
         return httpx.Response(200, json={"login": login})
 
-    monkeypatch.setattr(credentials, "TRANSPORT", httpx.MockTransport(handler))
+    monkeypatch.setattr(github, "TRANSPORT", httpx.MockTransport(handler))
     return seen
 
 
@@ -390,7 +390,7 @@ def test_no_event_ever_carries_a_token_over_sms(outbox, monkeypatch):
 
 
 def test_a_store_written_before_the_columns_existed_still_opens(tmp_path, monkeypatch):
-    """The live store predates github_login and token_added_at; opening it must migrate it."""
+    """The live store predates the credentials table; opening it must migrate it."""
     import sqlite3
 
     path = tmp_path / "old.db"

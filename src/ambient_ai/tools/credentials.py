@@ -1,16 +1,20 @@
-"""Managing the sender's own tool credentials from the conversation: list, add, replace, remove.
+"""Managing the sender's own keys from the conversation: list, add, replace, remove.
 
-Rule one is the kind of conversation. A GitHub token is one person's credential, so it is
-only ever handled where the conversation is one-to-one: a Telegram private chat, or SMS. In a
-group the intent is refused before anything is parsed, stored, logged, or extracted — a token
-pasted into a group is already visible to everyone in the room, and echoing any part of it
-back, or storing it because a room said so, makes that worse rather than better.
+Rule one is the kind of conversation. A key is one person's credential, so it is only ever
+handled where the conversation is one-to-one: a Telegram private chat, or SMS. In a group the
+intent is refused before anything is parsed, stored, logged, or extracted — a key pasted into
+a group is already visible to everyone in the room, and echoing any part of it back, or
+storing it because a room said so, makes that worse rather than better.
 
 Rule two is that the secret stays on this path. `parse_intent` runs before any model call, so
 a message carrying something token-shaped is handled deterministically and the model never
 sees it; `scrub` masks anything token-shaped in every body that goes on to the plan, the
 memory extractor, telemetry, or a reply. Replies never show more than the last four
-characters, which is enough for a person to tell two of their own tokens apart.
+characters, which is enough for a person to tell two of their own keys apart.
+
+Rule three is that nothing here names an integration. Every branch reads
+`ambient_ai.tools.registry`, so connecting a second service is an entry in the registry and
+no edit to this module.
 """
 
 from __future__ import annotations
@@ -21,13 +25,13 @@ from typing import Literal
 
 import httpx
 
-from ambient_ai.identity import clear_token, lookup_sender, set_token, upsert_sender
+from ambient_ai.identity import clear_credential, lookup_sender, set_credential, upsert_sender
 from ambient_ai.settings import MENTION
-from ambient_ai.tools.github_rest import github_client
+from ambient_ai.tools import registry
+from ambient_ai.tools.github import GITHUB
 
 Action = Literal["list", "add", "remove", "none"]
 
-GITHUB = "github"
 COMMAND = "/tools"
 ADD_WORDS = frozenset({"add", "replace", "set", "connect", "update"})
 REMOVE_WORDS = frozenset({"remove", "delete", "disconnect", "revoke", "forget"})
@@ -73,7 +77,7 @@ def parse_intent(body: str) -> CredentialIntent:
     """Read a credential intent off the raw message, deterministically and before any model.
 
     Two entry points: the explicit `/tools` command, and a bare token-shaped string, which is
-    always an add — somebody pasting a token means to connect it, and asking a model first
+    always an add — somebody pasting a key means to connect it, and asking a model first
     would be sending the secret to a third party to find that out.
     """
     text = body.replace(MENTION, " ").strip()
@@ -97,39 +101,33 @@ def parse_intent(body: str) -> CredentialIntent:
     return CredentialIntent()
 
 
-TRANSPORT: httpx.AsyncBaseTransport | None = None
-"""Test seam: tests set this to an `httpx.MockTransport` so no check reaches GitHub."""
-
-
-async def validate_github_token(
-    token: str, transport: httpx.AsyncBaseTransport | None = None
-) -> str | None:
-    """Return the login the token belongs to, or None when GitHub will not accept it.
-
-    A token is checked before it is stored, because a typo stored silently only shows up as a
-    failed answer several messages later, by which time nobody suspects the token.
-    """
-    async with github_client(token, transport or TRANSPORT) as client:
-        try:
-            response = await client.get("/user")
-        except httpx.HTTPError:
-            return None
-        if response.status_code != 200:
-            return None
-        login = response.json().get("login")
-    return str(login) if login else None
-
-
 GROUP_REFUSAL = "Manage your tools in a private chat with me."
-NO_TOOLS = "No tools connected. Paste a GitHub token here or use the portal link."
-ONLY_GITHUB = "I only manage GitHub tokens right now."
-ASK_FOR_TOKEN = "Paste your GitHub personal access token here and I'll connect it."
-REJECTED = "GitHub rejected that token, so I stored nothing. Paste a current one and I'll retry."
-DISCONNECTED = "GitHub disconnected."
-NOT_CONNECTED = "GitHub wasn't connected, so there was nothing to remove."
+NO_TOOLS = "No tools connected."
+OPTIONAL_NOTE = "All of them are optional — paste a key here to connect one."
 DELETE_FAILED_NOTE = (
     " I couldn't delete your message — delete it yourself so the token isn't left in the chat."
 )
+
+
+def unknown_tool_text(tool: str) -> str:
+    return f"I don't have an integration called {tool}.\n{status_text(None)}"
+
+
+def status_line(integration: registry.Integration, profile) -> str:
+    """One line per integration: what it is when absent, who it is connected as when present."""
+    credential = profile.credential(integration.key) if profile else None
+    if credential is None:
+        return f"{integration.name}: not connected — {integration.description}"
+    when = credential.added_at.date().isoformat() if credential.added_at else "earlier"
+    who = f" as {credential.login}" if credential.login else ""
+    return f"{integration.name}: connected{who} ({mask(credential.token)}), added {when}."
+
+
+def status_text(profile) -> str:
+    lines = [status_line(integration, profile) for integration in registry.integrations()]
+    connected = bool(profile.credentials) if profile else False
+    header = "Your integrations:" if connected else NO_TOOLS
+    return "\n".join([header, *lines, OPTIONAL_NOTE])
 
 
 async def handle(
@@ -138,34 +136,38 @@ async def handle(
     """Apply one credential intent for one sender. Returns (reply text, telemetry outcome).
 
     The caller has already established that the conversation is private; this function never
-    checks it again and never puts more than four characters of a token in what it returns.
+    checks it again and never puts more than four characters of a key in what it returns.
     """
-    if intent.tool != GITHUB:
-        return ONLY_GITHUB, "unknown tool"
     profile = lookup_sender(phone)
-    stored = profile.github_token if profile else None
+
+    if intent.action in ("none", "list") and intent.tool not in registry.keys():
+        return status_text(profile), "listed" if intent.action == "list" else "none"
+    integration = registry.find(intent.tool)
+    if integration is None:
+        return unknown_tool_text(intent.tool), "unknown tool"
 
     if intent.action == "list":
-        if not stored:
-            return NO_TOOLS, "none"
-        when = profile.token_added_at.date().isoformat() if profile.token_added_at else "earlier"
-        who = f" as {profile.github_login}" if profile.github_login else ""
-        return f"GitHub: connected{who} ({mask(stored)}), added {when}.", "listed"
+        return status_text(profile), "listed"
 
     if intent.action == "add":
         if not intent.token:
-            return ASK_FOR_TOKEN, "no token"
-        login = await validate_github_token(intent.token, transport)
+            label = integration.field_label.lower()
+            return f"Paste your {integration.name} {label} here and I'll connect it.", "no token"
+        login = await integration.validate(intent.token, transport)
         if login is None:
-            return REJECTED, "rejected"
+            return (
+                f"{integration.name} rejected that key, so I stored nothing. "
+                "Paste a current one and I'll retry."
+            ), "rejected"
         upsert_sender(phone)
-        set_token(phone, intent.token, login=login)
-        return f"GitHub connected as {login} ({mask(intent.token)}).", "stored"
+        set_credential(phone, integration.key, intent.token, login=login)
+        return f"{integration.name} connected as {login} ({mask(intent.token)}).", "stored"
 
     if intent.action == "remove":
-        if not stored:
-            return NOT_CONNECTED, "none"
-        clear_token(phone)
-        return DISCONNECTED, "cleared"
+        if not clear_credential(phone, integration.key):
+            return (
+                f"{integration.name} wasn't connected, so there was nothing to remove."
+            ), "none"
+        return f"{integration.name} disconnected.", "cleared"
 
-    return NO_TOOLS, "none"
+    return status_text(profile), "none"

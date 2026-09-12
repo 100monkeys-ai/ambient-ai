@@ -1,23 +1,33 @@
 from ambient_ai.identity.senders import (
+    Credential,
     SenderProfile,
     adopt_telegram_contact,
+    clear_credential,
     clear_token,
+    credential_for,
+    credentials_for,
     is_provisional,
     lookup_by_telegram_id,
     lookup_sender,
     resolve_telegram_sender,
+    set_credential,
     set_token,
     upsert_sender,
 )
 
 __all__ = [
+    "Credential",
     "SenderProfile",
     "adopt_telegram_contact",
+    "clear_credential",
     "clear_token",
+    "credential_for",
+    "credentials_for",
     "is_provisional",
     "lookup_by_telegram_id",
     "lookup_sender",
     "resolve_telegram_sender",
+    "set_credential",
     "set_token",
     "upsert_sender",
 ]

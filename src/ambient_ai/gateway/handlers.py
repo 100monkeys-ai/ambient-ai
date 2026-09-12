@@ -34,7 +34,7 @@ Forget = Callable[[], bool]
 ONBOARD_TEXT = "I don't have a workspace for you yet! Tap here to authenticate: {link}"
 CONNECT_TEXT = (
     "I need your permission to access GitHub to check that repo. "
-    "Secure your workspace and connect tools here: {link}"
+    "Connect it — and anything else you want me to reach — here: {link}"
 )
 
 
