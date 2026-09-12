@@ -1,6 +1,10 @@
 import pytest
+from pydantic_ai import models
 
 from ambient_ai.telemetry import log
+
+models.ALLOW_MODEL_REQUESTS = False
+"""No test may reach a model provider; pydantic-ai raises instead of calling out."""
 
 
 @pytest.fixture(autouse=True)

@@ -7,6 +7,7 @@ from ambient_ai.telemetry import log
 
 PHONE = "+15551234567"
 AGENT = "+15550000000"
+REPLY = "Your backend repo is sms-swarm-core; latest commit abc1234 fixes the auth bug."
 
 
 def post_sms(client: TestClient, body: str, sender: str = PHONE):
@@ -53,14 +54,21 @@ def test_known_unverified_sender_is_texted_a_connect_link(outbox):
     assert verify(token) == PHONE
 
 
-def test_known_sender_with_token_gets_acknowledgement(outbox):
+def test_known_sender_with_token_gets_the_orchestrated_reply(outbox, monkeypatch):
     upsert_sender(PHONE)
     set_token(PHONE, "ghp_testtoken")
+    seen: list[tuple[str, str | None, str]] = []
+
+    async def fake_run_mention(profile, body):
+        seen.append((profile.phone, profile.github_token, body))
+        return REPLY
+
+    monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", fake_run_mention)
     client = TestClient(create_app())
     body = "@agent look up my notes on the auth bug and check the latest commit on my backend repo"
     post_sms(client, body)
-    assert len(body) > 60
-    assert outbox == [(PHONE, "Got it. Working on: " + body[:60])]
+    assert seen == [(PHONE, "ghp_testtoken", body)]
+    assert outbox == [(PHONE, REPLY)]
 
 
 def test_no_event_carries_a_full_phone_number(outbox):
