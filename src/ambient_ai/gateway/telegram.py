@@ -19,6 +19,19 @@ TELEGRAM_TEXT_MAX_CHARS = 4096
 """Bot API limit for one sendMessage; orchestration already clips to the 480-char SMS shape."""
 
 
+SHARE_NUMBER_BUTTON = "Share my number"
+CONTACT_KEYBOARD: dict[str, Any] = {
+    "keyboard": [[{"text": SHARE_NUMBER_BUTTON, "request_contact": True}]],
+    "one_time_keyboard": True,
+    "resize_keyboard": True,
+}
+"""One-tap `request_contact` button. Telegram only gives a webhook a user id, and the number
+is the primary key on every transport (ADR-003), so this button is the whole identity bridge
+on this transport. Reply keyboards are private-chat only: Telegram shows nothing in a group."""
+
+REMOVE_KEYBOARD: dict[str, Any] = {"remove_keyboard": True}
+
+
 class TelegramRefused(Exception):
     """Telegram answered with an error for this chat (e.g. the user never started the bot)."""
 
@@ -33,16 +46,23 @@ def _api(method: str, **params: Any) -> dict[str, Any]:
     return payload["result"]
 
 
-def send_telegram(chat_id: int, text: str) -> int:
-    """Send plain text to a chat (a group, or a user's private chat). Returns the message id."""
+def send_telegram(chat_id: int, text: str, *, reply_markup: dict[str, Any] | None = None) -> int:
+    """Send plain text to a chat (a group, or a user's private chat). Returns the message id.
+
+    `reply_markup` carries CONTACT_KEYBOARD or REMOVE_KEYBOARD; it is only ever passed for a
+    private chat, because Telegram ignores a reply keyboard everywhere else.
+    """
     text = text[:TELEGRAM_TEXT_MAX_CHARS]
     outbox = env("FAKE_TELEGRAM_OUTBOX")
     if outbox:
         with open(outbox, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"chat_id": chat_id, "text": text}) + "\n")
+            fh.write(
+                json.dumps({"chat_id": chat_id, "text": text, "reply_markup": reply_markup}) + "\n"
+            )
         log.emit("telegram.faked", to=redact(str(chat_id)), chars=len(text))
         return 0
-    result = _api("sendMessage", chat_id=chat_id, text=text)
+    extra = {"reply_markup": reply_markup} if reply_markup else {}
+    result = _api("sendMessage", chat_id=chat_id, text=text, **extra)
     log.emit("telegram.sent", to=redact(str(chat_id)), chars=len(text))
     return int(result["message_id"])
 

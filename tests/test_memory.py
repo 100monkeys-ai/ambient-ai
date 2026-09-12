@@ -111,7 +111,7 @@ async def test_remember_creates_the_page_with_one_dated_line_per_fact(monkeypatc
         "- 2026-09-12: backend repo is sms-swarm-core",
         "- 2026-09-12: working on the auth bug",
     ]
-    assert "5551234567" not in body and "5551234567" not in path
+    assert path == "senders/15551234567"
     assert any(e.kind == "memory.written" and e.fields["facts"] == 2 for e in log.events)
 
 
@@ -143,3 +143,54 @@ async def test_remember_without_cortex_emits_unavailable_and_does_nothing(monkey
     assert written is False and cortex.calls == []
     unavailable = [e for e in log.events if e.kind == "memory.unavailable"]
     assert unavailable and "5551234567" not in str(unavailable[0].fields)
+
+
+# --- the page is keyed and titled by the number (ADR-003, architect 2026-09-12 20:27) -----
+
+
+def test_memory_path_for_a_phone_is_its_digits():
+    assert memory_path("+15551234567") == "senders/15551234567"
+    assert memory_path("+15037419825") == "senders/15037419825"
+
+
+def test_memory_path_for_a_provisional_telegram_sender_stays_hashed():
+    path = memory_path("tg:8762667954")
+    assert path.startswith("senders/") and "8762667954" not in path
+
+
+def test_memory_title_carries_the_formatted_number():
+    from ambient_ai.memory.writer import memory_title
+
+    assert memory_title("+15037419825") == "Sender memory +1 503 741 9825"
+    assert memory_title("tg:8762667954") == "Sender memory"
+
+
+async def test_remember_titles_a_new_page_with_the_number(monkeypatch):
+    monkeypatch.setenv("CORTEX_MCP_URL", "http://cortex.test/mcp")
+    cortex = FakeCortex()
+    await remember(SenderProfile(phone=PHONE), two_facts(), toolset_factory=cortex.open)
+    create = [args for name, args in cortex.calls if name == PAGE_CREATE_TOOL][0]
+    assert create["title"] == "Sender memory +1 555 123 4567"
+
+
+async def test_migrate_moves_the_provisional_page_and_soft_deletes_it(monkeypatch):
+    from ambient_ai.memory.writer import PAGE_SOFT_DELETE_TOOL, migrate_memory_page
+
+    monkeypatch.setenv("CORTEX_MCP_URL", "http://cortex.test/mcp")
+    old, new = memory_path("tg:123456789"), memory_path(PHONE)
+    cortex = FakeCortex({old: "# Memory\n\n- 2026-09-12: backend repo is sms-swarm-core\n"})
+    moved = await migrate_memory_page("tg:123456789", PHONE, toolset_factory=cortex.open)
+    assert moved is True
+    assert "backend repo is sms-swarm-core" in cortex.pages[new]
+    assert old in cortex.deleted
+    assert PAGE_SOFT_DELETE_TOOL in [name for name, _ in cortex.calls]
+
+
+async def test_migrate_without_a_provisional_page_writes_nothing(monkeypatch):
+    from ambient_ai.memory.writer import migrate_memory_page
+
+    monkeypatch.setenv("CORTEX_MCP_URL", "http://cortex.test/mcp")
+    cortex = FakeCortex()
+    moved = await migrate_memory_page("tg:123456789", PHONE, toolset_factory=cortex.open)
+    assert moved is False
+    assert cortex.pages == {}

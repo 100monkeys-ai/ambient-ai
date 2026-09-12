@@ -10,13 +10,14 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any
 
+from ambient_ai.memory.writer import PAGE_SOFT_DELETE_TOOL
 from ambient_ai.orchestration.context_agent import (
     PAGE_APPEND_TOOL,
     PAGE_CREATE_TOOL,
     PAGE_READ_TOOL,
 )
 
-SERVER_TOOL_NAMES = (PAGE_READ_TOOL, PAGE_CREATE_TOOL, PAGE_APPEND_TOOL)
+SERVER_TOOL_NAMES = (PAGE_READ_TOOL, PAGE_CREATE_TOOL, PAGE_APPEND_TOOL, PAGE_SOFT_DELETE_TOOL)
 
 
 class FakeCortex:
@@ -28,6 +29,7 @@ class FakeCortex:
         tool_names: tuple[str, ...] = SERVER_TOOL_NAMES,
     ) -> None:
         self.pages: dict[str, str] = dict(pages or {})
+        self.deleted: list[str] = []
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.tool_names = tool_names
 
@@ -50,6 +52,10 @@ class FakeCortex:
             return {"path": path}
         if name == PAGE_APPEND_TOOL:
             self.pages[path] = self.pages[path].rstrip("\n") + "\n" + args["content"] + "\n"
+            return {"path": path}
+        if name == PAGE_SOFT_DELETE_TOOL:
+            self.pages.pop(path, None)
+            self.deleted.append(path)
             return {"path": path}
         raise AssertionError(name)
 

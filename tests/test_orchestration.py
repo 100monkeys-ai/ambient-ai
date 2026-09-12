@@ -220,13 +220,14 @@ async def test_recall_without_cortex_returns_empty_and_emits_memory_unavailable(
 
 
 @pytest.mark.parametrize("phone", ["+15551230001", "+15551230002"])
-def test_memory_path_is_hashed_not_the_number(phone):
+def test_memory_path_is_the_number_and_is_unique_per_sender(phone):
+    """Superseded the hashed path on 2026-09-12 at 20:27 UTC by the architect's ruling: the
+    memory workspace is private and a human has to find a sender's page by their number."""
     from ambient_ai.orchestration.context_agent import memory_path
 
     path = memory_path(phone)
-    assert path.startswith("senders/")
-    assert "5551230" not in path
-    assert len(path) == len("senders/") + 16
+    assert path == "senders/" + phone.lstrip("+")
+    assert path != memory_path("+15551230003")
 
 
 # --- the Cortex MCP tool names, as the live server spells them -----------------------------

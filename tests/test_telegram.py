@@ -6,14 +6,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ambient_ai.gateway import create_app
-from ambient_ai.gateway.telegram import TelegramRefused
+from ambient_ai.gateway.telegram import CONTACT_KEYBOARD, TelegramRefused
 from ambient_ai.gateway.telegram_webhook import set_bot_identity
 from ambient_ai.identity import lookup_sender, set_token, upsert_sender
 from ambient_ai.identity.magic_link import verify
+from ambient_ai.identity.senders import adopt_telegram_contact
 from ambient_ai.telemetry import log
 
 USER_ID = 123456789
 SENDER = f"tg:{USER_ID}"
+PHONE = "+15551234567"
 GROUP_ID = -1001234567890
 BOT_USERNAME = "ambient_demo_bot"
 BOT_ID = 987654321
@@ -29,11 +31,11 @@ def telegram_settings(monkeypatch):
 
 @pytest.fixture
 def sends(monkeypatch):
-    """Replace send_telegram with a fake that records (chat_id, text) pairs."""
-    calls: list[tuple[int, str]] = []
+    """Replace send_telegram with a fake recording (chat_id, text, reply_markup) triples."""
+    calls: list[tuple[int, str, dict | None]] = []
 
-    def fake_send(chat_id: int, text: str) -> int:
-        calls.append((chat_id, text))
+    def fake_send(chat_id: int, text: str, *, reply_markup: dict | None = None) -> int:
+        calls.append((chat_id, text, reply_markup))
         return 1
 
     monkeypatch.setattr("ambient_ai.gateway.telegram_webhook.send_telegram", fake_send)
@@ -54,6 +56,24 @@ def update(text: str, *, chat_type: str = "supergroup", reply_to_bot: bool = Fal
     if reply_to_bot:
         message["reply_to_message"] = {"message_id": 41, "from": {"id": BOT_ID, "is_bot": True}}
     return {"update_id": 7, "message": message}
+
+
+def contact_update(*, phone: str = PHONE, owner_id: int | None = None) -> dict:
+    """A shared contact arriving in the user's private chat."""
+    return {
+        "update_id": 8,
+        "message": {
+            "message_id": 43,
+            "from": {"id": USER_ID, "is_bot": False, "first_name": "Alice"},
+            "chat": {"id": USER_ID, "type": "private"},
+            "date": 1757700001,
+            "contact": {
+                "phone_number": phone.lstrip("+"),
+                "first_name": "Alice",
+                "user_id": USER_ID if owner_id is None else owner_id,
+            },
+        },
+    }
 
 
 def post(client: TestClient, payload: dict, secret: str = SECRET):
@@ -80,7 +100,7 @@ def test_unknown_user_mention_gets_one_private_portal_link(sends):
     response = post(TestClient(create_app()), update(f"@{BOT_USERNAME} hello"))
     assert response.status_code == 200
     assert len(sends) == 1
-    chat_id, text = sends[0]
+    chat_id, text, _ = sends[0]
     assert chat_id == USER_ID
     assert "http://portal.test/portal/" in text
     token = text.split("/portal/", 1)[1].split()[0]
@@ -88,21 +108,84 @@ def test_unknown_user_mention_gets_one_private_portal_link(sends):
     assert lookup_sender(SENDER) is not None
 
 
-def test_private_link_falls_back_to_the_group_when_telegram_refuses(monkeypatch):
-    calls: list[tuple[int, str]] = []
+def test_unknown_user_gets_the_contact_keyboard_in_the_private_reply(sends):
+    post(TestClient(create_app()), update(f"@{BOT_USERNAME} hello"))
+    chat_id, text, markup = sends[0]
+    assert chat_id == USER_ID
+    assert markup == CONTACT_KEYBOARD
+    assert "number" in text.lower()
 
-    def refusing_send(chat_id: int, text: str) -> int:
+
+def test_a_sender_with_a_number_is_never_asked_for_it_again(sends, monkeypatch):
+    adopt_telegram_contact(USER_ID, PHONE)
+    set_token(PHONE, "ghp_testtoken")
+
+    async def fake_run_mention(profile, body):
+        return REPLY
+
+    monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", fake_run_mention)
+    monkeypatch.setattr(
+        "ambient_ai.gateway.handlers.schedule_extraction", lambda profile, transcript: None
+    )
+    post(TestClient(create_app()), update(f"@{BOT_USERNAME} hello"))
+    assert sends == [(GROUP_ID, REPLY, None)]
+
+
+def test_private_link_falls_back_to_the_group_when_telegram_refuses(monkeypatch):
+    calls: list[tuple[int, str, dict | None]] = []
+
+    def refusing_send(chat_id: int, text: str, *, reply_markup: dict | None = None) -> int:
         if chat_id == USER_ID:
             raise TelegramRefused("Forbidden: bot can't initiate conversation with a user")
-        calls.append((chat_id, text))
+        calls.append((chat_id, text, reply_markup))
         return 1
 
     monkeypatch.setattr("ambient_ai.gateway.telegram_webhook.send_telegram", refusing_send)
     post(TestClient(create_app()), update(f"@{BOT_USERNAME} hello"))
     assert len(calls) == 1
-    chat_id, text = calls[0]
+    chat_id, text, markup = calls[0]
     assert chat_id == GROUP_ID
     assert "/portal/" in text and "privately" in text
+    assert markup is None, "a reply keyboard cannot be shown in a group"
+
+
+def test_contact_shared_for_self_maps_the_id_and_merges_the_provisional_record(sends):
+    upsert_sender(SENDER)
+    set_token(SENDER, "ghp_testtoken")
+    response = post(TestClient(create_app()), contact_update())
+    assert response.status_code == 200
+    phone_record = lookup_sender(PHONE)
+    assert phone_record is not None
+    assert phone_record.github_token == "ghp_testtoken"
+    assert phone_record.telegram_user_id == str(USER_ID)
+    assert lookup_sender(SENDER) is None, "the provisional record is merged away, not left behind"
+    assert "identity.number_linked" in [e.kind for e in log.events]
+
+
+def test_contact_shared_for_someone_else_is_ignored_with_an_event(sends):
+    post(TestClient(create_app()), contact_update(phone="+15559998888", owner_id=42))
+    assert lookup_sender("+15559998888") is None
+    kinds = [e.kind for e in log.events]
+    assert "identity.contact_ignored" in kinds
+
+
+def test_a_mapped_user_mention_resolves_to_the_phone_record_and_its_token(sends, monkeypatch):
+    adopt_telegram_contact(USER_ID, PHONE)
+    set_token(PHONE, "ghp_phonetoken")
+    seen: list[tuple[str, str | None, str]] = []
+
+    async def fake_run_mention(profile, body):
+        seen.append((profile.phone, profile.github_token, body))
+        return REPLY
+
+    monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", fake_run_mention)
+    monkeypatch.setattr(
+        "ambient_ai.gateway.handlers.schedule_extraction", lambda profile, transcript: None
+    )
+    body = f"@{BOT_USERNAME} check the latest commit on my backend repo"
+    post(TestClient(create_app()), update(body))
+    assert seen == [(PHONE, "ghp_phonetoken", body)]
+    assert sends == [(GROUP_ID, REPLY, None)]
 
 
 def test_known_user_with_token_gets_the_reply_in_the_group(sends, monkeypatch):
@@ -123,8 +206,9 @@ def test_known_user_with_token_gets_the_reply_in_the_group(sends, monkeypatch):
     body = f"@{BOT_USERNAME} check the latest commit on my backend repo"
     post(TestClient(create_app()), update(body))
     assert seen == [(SENDER, "ghp_testtoken", body)]
-    assert sends == [(GROUP_ID, REPLY)]
+    assert sends[0] == (GROUP_ID, REPLY, None)
     assert len(scheduled) == 1 and REPLY in scheduled[0]
+    assert sends[1][0] == USER_ID and sends[1][2] == CONTACT_KEYBOARD
 
 
 def test_reply_to_the_bot_counts_as_a_mention(sends):
@@ -142,3 +226,11 @@ def test_no_event_carries_the_full_telegram_id(sends):
     captured = "\n".join(f"{e.kind} {e.fields}" for e in log.events)
     assert str(USER_ID) not in captured and str(GROUP_ID) not in captured
     assert "6789" in captured
+
+
+def test_no_event_carries_the_full_phone_number(sends):
+    upsert_sender(SENDER)
+    post(TestClient(create_app()), contact_update())
+    captured = "\n".join(f"{e.kind} {e.fields}" for e in log.events)
+    assert PHONE not in captured and PHONE.lstrip("+") not in captured
+    assert "***4567" in captured

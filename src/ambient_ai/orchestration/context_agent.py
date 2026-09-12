@@ -1,8 +1,9 @@
 """Context Agent: reads one sender's memory page from Cortex over MCP.
 
-Memory scope is one page per sender at `senders/<sha256(E.164)[:16]>` inside the workspace
-the token grants (CORTEX_WORKSPACE names it explicitly when set, because the per-token
-current-workspace pointer is shared). The number itself never leaves this process.
+Memory scope is one page per sender at `senders/<E.164 digits>` inside the workspace the
+token grants (CORTEX_WORKSPACE names it explicitly when set, because the per-token
+current-workspace pointer is shared). That private workspace is the only place a full number
+appears; it never reaches an event, a log line, or the projector.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
-from ambient_ai.identity.senders import SenderProfile
+from ambient_ai.identity.senders import SenderProfile, is_provisional
 from ambient_ai.settings import OUTBOUND_TIMEOUT_SECONDS, env
 from ambient_ai.telemetry import log, redact
 
@@ -88,10 +89,20 @@ async def call_cortex(toolset: Any, name: str, args: dict[str, Any]) -> Any:
         return await toolset.direct_call_tool(name, args)
 
 
-def memory_path(phone: str) -> str:
-    """Cortex page path for a sender's memory; never contains the number."""
-    digest = hashlib.sha256(phone.encode("utf-8")).hexdigest()
-    return f"senders/{digest[:16]}"
+def memory_path(sender: str) -> str:
+    """Cortex page path for a sender's memory: `senders/<E.164 digits>` once the number is known.
+
+    The number is the primary key (ADR-003), and a human reading the memory workspace has to
+    be able to find a sender's page by their number; a hash made every page anonymous to the
+    architect as well as to an attacker. The page lives in the private Ambient Memory
+    workspace, which is the only place a full number appears — the redaction rule on the
+    event stream and the projector log is unchanged. A provisional `tg:` sender has no number
+    yet, so their page keeps a hash until they share their contact.
+    """
+    if is_provisional(sender):
+        digest = hashlib.sha256(sender.encode("utf-8")).hexdigest()
+        return f"senders/{digest[:16]}"
+    return "senders/" + "".join(ch for ch in sender if ch.isdigit())
 
 
 def facts_from_body(body: str) -> list[str]:
