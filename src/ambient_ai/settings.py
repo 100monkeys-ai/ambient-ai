@@ -10,7 +10,10 @@ load_dotenv()
 LLM_PROVIDER = "anthropic"
 
 LLM_MODEL_ID = "claude-opus-5"
-"""The model behind the orchestrator, the Execution Agent, and synthesis."""
+"""The model behind the orchestrator and synthesis."""
+
+EXECUTION_MODEL_ID = "claude-sonnet-5"
+"""The model behind the Execution Agent: the slowest step, measured, so the fastest model."""
 
 EXTRACTOR_MODEL_ID = "claude-haiku-4-5"
 """The model behind the memory extractor: a bulk job off the reply path, so a cheaper one."""

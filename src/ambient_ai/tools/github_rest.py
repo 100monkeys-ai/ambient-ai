@@ -53,14 +53,43 @@ async def _qualify(deps: GitHubDeps, repo: str) -> str:
 
 
 async def list_repos(deps: GitHubDeps) -> list[dict[str, Any]]:
+    """Every repository the token can read, not only the ones the sender owns.
+
+    `affiliation=owner` alone hid `100monkeys-ai/ambient-ai` on 2026-09-12 at 20:16 UTC and
+    the agent answered that the repository did not exist. Organisation membership and
+    collaborator access are how a real person reaches a work repository, so both are asked
+    for. An empty list now means the token has no organisation access, not that the code
+    looked in the wrong place.
+    """
     response = await deps.client.get(
-        "/user/repos", params={"sort": "pushed", "per_page": 30, "affiliation": "owner"}
+        "/user/repos",
+        params={
+            "sort": "pushed",
+            "per_page": 100,
+            "affiliation": "owner,collaborator,organization_member",
+        },
     )
     response.raise_for_status()
     return [
         {"name": r["full_name"], "private": r.get("private"), "pushed_at": r.get("pushed_at")}
         for r in response.json()
     ]
+
+
+async def get_repo(deps: GitHubDeps, full_name: str) -> dict[str, Any]:
+    """One repository by 'owner/name', for a repo the listing did not surface."""
+    full = await _qualify(deps, full_name)
+    response = await deps.client.get(f"/repos/{full}")
+    if response.status_code == 404:
+        return {"error": f"no repository named {full}, or the token cannot see it"}
+    response.raise_for_status()
+    r = response.json()
+    return {
+        "repo": r.get("full_name", full),
+        "default_branch": r.get("default_branch"),
+        "pushed_at": r.get("pushed_at"),
+        "private": r.get("private"),
+    }
 
 
 async def latest_commit(deps: GitHubDeps, repo: str) -> dict[str, Any]:

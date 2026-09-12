@@ -132,10 +132,11 @@ def test_orchestrator_has_zero_tools():
     assert agent.output_type is Plan
 
 
-def test_execution_agent_has_exactly_the_three_github_tools():
+def test_execution_agent_has_exactly_the_four_github_tools():
     agent = build_execution_agent(TestModel())
     assert set(agent._function_toolset.tools) == {
         "list_repos",
+        "get_repo",
         "latest_commit",
         "open_pull_requests",
     }
