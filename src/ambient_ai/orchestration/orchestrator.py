@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 
-from ambient_ai.orchestration.llm import llm_model
+from ambient_ai.orchestration.llm import PLAN_SETTINGS, llm_model
 
 
 class Plan(BaseModel):
@@ -56,4 +56,5 @@ def build_orchestrator(model: Model | str | None = None) -> Agent[None, Plan]:
         instructions=ORCHESTRATOR_INSTRUCTIONS,
         name="orchestrator",
         retries=2,
+        model_settings=PLAN_SETTINGS,
     )

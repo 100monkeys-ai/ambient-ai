@@ -7,9 +7,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-LLM_PROVIDER = "openai"
-LLM_MODEL_ID = "gpt-4o-mini"
-"""The single model id used by every agent. Change it here, nowhere else."""
+LLM_PROVIDER = "anthropic"
+
+LLM_MODEL_ID = "claude-opus-5"
+"""The model behind the orchestrator, the Execution Agent, and synthesis."""
+
+EXTRACTOR_MODEL_ID = "claude-haiku-4-5"
+"""The model behind the memory extractor: a bulk job off the reply path, so a cheaper one."""
 
 MENTION = "@agent"
 """The token that wakes the agent. Messages without it are dropped at the gateway."""
@@ -30,7 +34,7 @@ ENV_NAMES = (
     "APP_SECRET",
     "PORTAL_BASE_URL",
     "DB_PATH",
-    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
     "CORTEX_MCP_URL",
     "CORTEX_MCP_TOKEN",
     "CORTEX_WORKSPACE",

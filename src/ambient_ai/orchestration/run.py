@@ -16,7 +16,7 @@ from pydantic_ai.models import Model
 from ambient_ai.identity.senders import SenderProfile
 from ambient_ai.orchestration import context_agent
 from ambient_ai.orchestration.execution_agent import build_execution_agent
-from ambient_ai.orchestration.llm import llm_model
+from ambient_ai.orchestration.llm import SYNTHESIS_SETTINGS, llm_model
 from ambient_ai.orchestration.orchestrator import Plan, build_orchestrator
 from ambient_ai.settings import SMS_REPLY_MAX_CHARS
 from ambient_ai.telemetry import log, redact
@@ -43,7 +43,11 @@ say so plainly. Never invent details that are not in the findings.
 
 def build_synthesizer(model: Model | str | None = None) -> Agent[None, str]:
     return Agent(
-        llm_model(model), output_type=str, instructions=SYNTHESIS_INSTRUCTIONS, name="synthesis"
+        llm_model(model),
+        output_type=str,
+        instructions=SYNTHESIS_INSTRUCTIONS,
+        name="synthesis",
+        model_settings=SYNTHESIS_SETTINGS,
     )
 
 

@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
 
-from ambient_ai.orchestration.llm import llm_model
+from ambient_ai.orchestration.llm import EXTRACTOR_SETTINGS, llm_model
+from ambient_ai.settings import EXTRACTOR_MODEL_ID
 
 
 class MemoryExtraction(BaseModel):
@@ -51,11 +52,12 @@ fact or preference is present.
 def build_extractor(model: Model | str | None = None) -> Agent[None, MemoryExtraction]:
     """Build the extractor agent. It has no tools; tests inspect its tool list."""
     return Agent(
-        llm_model(model),
+        llm_model(model, model_id=EXTRACTOR_MODEL_ID),
         output_type=MemoryExtraction,
         instructions=EXTRACTOR_INSTRUCTIONS,
         name="memory-extractor",
         retries=2,
+        model_settings=EXTRACTOR_SETTINGS,
     )
 
 

@@ -11,7 +11,7 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "pydantic",
-    "pydantic-ai-slim[openai,mcp]",
+    "pydantic-ai-slim[anthropic,mcp]",
     "twilio",
     "httpx",
     "python-dotenv",
