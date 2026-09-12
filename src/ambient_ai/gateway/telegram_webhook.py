@@ -38,6 +38,10 @@ from ambient_ai.telemetry import log, redact
 router = APIRouter()
 
 SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"
+TELEGRAM_REPLY_MAX_CHARS = 1500
+"""Telegram has no 160-character segment and no per-segment charge, so a reply that
+summarises a repository is not cut to an SMS. Well under the Bot API's 4096-character
+message limit, and short enough to stay a chat message rather than a document."""
 GROUP_FALLBACK_NOTE = (
     "I couldn't message you privately (start a chat with me first next time), "
     "so here is your link: "
@@ -177,6 +181,7 @@ def _run_handler(
             link_reply=link_reply,
             private=private,
             forget_message=forget_message,
+            max_reply_chars=TELEGRAM_REPLY_MAX_CHARS,
         )
         if needs_number and not asked:
             _ask_for_number(user_id, sender)

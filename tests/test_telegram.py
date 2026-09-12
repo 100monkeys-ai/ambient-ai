@@ -254,3 +254,22 @@ def test_a_fallback_reply_schedules_no_extraction(sends, monkeypatch):
     post(TestClient(create_app()), update(f"@{BOT_USERNAME} what is my latest commit?"))
     assert sends[0] == (GROUP_ID, GITHUB_UNAVAILABLE_REPLY, None)
     assert scheduled == []
+
+
+def test_telegram_gets_a_longer_reply_limit_than_sms(sends, monkeypatch):
+    """Telegram has no 160-character segment, so a repository summary is not clipped to an
+    SMS. The transport chooses the limit; the SMS webhook still passes 480."""
+    adopt_telegram_contact(USER_ID, PHONE)
+    set_token(PHONE, "ghp_testtoken")
+    limits: list[int] = []
+
+    async def fake_run_mention(profile, body, **kwargs):
+        limits.append(kwargs["max_reply_chars"])
+        return REPLY
+
+    monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", fake_run_mention)
+    monkeypatch.setattr(
+        "ambient_ai.gateway.handlers.schedule_extraction", lambda profile, transcript: None
+    )
+    post(TestClient(create_app()), update(f"@{BOT_USERNAME} summarize ambient-ai"))
+    assert limits == [1500]

@@ -37,33 +37,45 @@ CREDENTIALS_PRIVATE_ONLY_REPLY = "Manage your tools in a private chat with me."
 """A group is the wrong room for one person's credential, so the intent is refused there and
 nothing is read from or written to the store."""
 
-SYNTHESIS_INSTRUCTIONS = """\
-You are Ambient AI, a phone contact replying in an SMS group chat.
+SYNTHESIS_TEMPLATE = """\
+You are Ambient AI, a phone contact replying in a group chat.
 Write the reply to the sender's message from the facts and findings you are given.
 Plain text only: no markdown, no bullet points, no headings, no emoji.
-At most 480 characters and at most four short sentences. Name the repository and the
-short commit sha when they are known. If a finding says something could not be found,
-say so plainly. Never invent details that are not in the findings.
+At most {max_chars} characters. Name the repository and the short commit sha when they are
+known. If a finding says something could not be found, say so plainly. Never invent details
+that are not in the findings.
 """
+"""The character limit is the transport's, not a constant: an SMS is billed in 160-character
+segments and a Telegram message is not, so the prompt is told the limit the caller passed and
+`clip` enforces the same number. A prompt that says 480 while the caller clips at 1500 wastes
+the room; the reverse truncates mid-sentence."""
 
 
-def build_synthesizer(model: Model | str | None = None) -> Agent[None, str]:
+def build_synthesizer(
+    model: Model | str | None = None, max_chars: int = SMS_REPLY_MAX_CHARS
+) -> Agent[None, str]:
     return Agent(
         llm_model(model),
         output_type=str,
-        instructions=SYNTHESIS_INSTRUCTIONS,
+        instructions=SYNTHESIS_TEMPLATE.format(max_chars=max_chars),
         name="synthesis",
         model_settings=SYNTHESIS_SETTINGS,
     )
 
 
-def clip_sms(text: str) -> str:
-    text = " ".join(text.split())
+def clip(text: str, max_chars: int = SMS_REPLY_MAX_CHARS) -> str:
+    """Flatten to plain text, scrub anything token-shaped, and cut to the transport's limit.
+
+    The scrub is the last gate before a reply leaves: the Execution Agent now reads file
+    contents, so a secret committed to a repository could otherwise be quoted back into a
+    chat that other people can read.
+    """
+    text = scrub(" ".join(text.split()))
     for ch in ("**", "`", "#"):
         text = text.replace(ch, "")
-    if len(text) <= SMS_REPLY_MAX_CHARS:
+    if len(text) <= max_chars:
         return text
-    cut = text[: SMS_REPLY_MAX_CHARS - 1]
+    cut = text[: max_chars - 1]
     if " " in cut[-40:]:
         cut = cut[: cut.rfind(" ")]
     return cut + "…"
@@ -110,6 +122,7 @@ async def run_mention(
     transport: httpx.AsyncBaseTransport | None = None,
     private: bool = True,
     credentials_fn: CredentialsFn | None = None,
+    max_reply_chars: int = SMS_REPLY_MAX_CHARS,
 ) -> str:
     """Answer one @mention for one sender. Returns the SMS text; the gateway sends it.
 
@@ -117,6 +130,7 @@ async def run_mention(
     `credentials_fn` is how the gateway applies a credential action it alone can perform.
     Keyword arguments are test seams: `model` replaces the LLM for every agent, `recall_fn`
     replaces the Cortex read, `transport` replaces the network under the GitHub client.
+    `max_reply_chars` is the transport's limit: SMS passes 480, Telegram 1500.
     """
     who = redact(sender.phone)
     recall = recall_fn or context_agent.recall
@@ -143,12 +157,12 @@ async def run_mention(
         if not private or credentials_fn is None:
             return fallback(who, CREDENTIALS_PRIVATE_ONLY_REPLY, status="refused")
         tool = plan.credentials_tool or "github"
-        reply = clip_sms(await credentials_fn(plan.credentials_action, tool))
+        reply = clip(await credentials_fn(plan.credentials_action, tool), max_reply_chars)
         log.emit("orchestration.reply", sender=who, chars=len(reply), path="credentials")
         return reply
 
     if plan.direct_reply and not (plan.needs_memory or plan.needs_github):
-        reply = clip_sms(plan.direct_reply)
+        reply = clip(plan.direct_reply, max_reply_chars)
         log.emit("orchestration.reply", sender=who, chars=len(reply), path="direct")
         return reply
 
@@ -188,7 +202,8 @@ async def run_mention(
     )
     synthesis_prompt += f"\nFindings from GitHub:\n{findings or 'none'}"
     try:
-        reply = clip_sms((await build_synthesizer(model).run(synthesis_prompt)).output)
+        synthesizer = build_synthesizer(model, max_reply_chars)
+        reply = clip((await synthesizer.run(synthesis_prompt)).output, max_reply_chars)
     except Exception as exc:
         log.emit(
             "orchestration.synthesize", sender=who, status="failed", error=type(exc).__name__

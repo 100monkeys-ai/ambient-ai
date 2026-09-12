@@ -58,7 +58,7 @@ def test_reply_path_agents_run_on_the_orchestrator_model():
 def test_every_call_carries_a_small_output_bound_and_adaptive_thinking():
     """ADR-009 trigger 1: a reply within 30 seconds over four sequential calls."""
     assert PLAN_SETTINGS["max_tokens"] == 1024
-    assert SYNTHESIS_SETTINGS["max_tokens"] == 512
+    assert SYNTHESIS_SETTINGS["max_tokens"] == 1024
     assert EXTRACTOR_SETTINGS["max_tokens"] == 1024
     # Effort is only offered where the model profile supports it.
     assert PLAN_SETTINGS["anthropic_effort"] == "low"

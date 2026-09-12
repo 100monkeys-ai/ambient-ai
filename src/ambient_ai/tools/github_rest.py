@@ -6,6 +6,8 @@ sender's own token, and returns a compact dict the Execution Agent can read.
 
 from __future__ import annotations
 
+import base64
+import binascii
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -128,3 +130,120 @@ async def open_pull_requests(deps: GitHubDeps, repo: str) -> dict[str, Any]:
             for p in response.json()
         ],
     }
+
+
+TREE_MAX_PATHS = 200
+"""How many paths a listing returns. A large repository's whole tree would fill the
+Execution Agent's context with names and leave no room for the files that answer the
+question, so the listing is cut and the cut is named in the result."""
+
+FILE_MAX_CHARS = 24 * 1024
+"""How much of one file the agent reads. Enough for a README or a module; small enough that
+three files still fit beside the model's own reasoning."""
+
+BINARY_SUFFIXES = frozenset(
+    {
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".pdf", ".zip", ".gz",
+        ".tar", ".whl", ".so", ".dylib", ".dll", ".exe", ".woff", ".woff2", ".ttf", ".mp3",
+        ".mp4", ".mov", ".wasm", ".pyc", ".jar", ".class", ".db", ".sqlite",
+    }
+)
+"""Refused before the bytes are decoded. A binary file cannot be summarised and its decoded
+mojibake would spend the whole token budget saying nothing."""
+
+
+async def _default_branch(deps: GitHubDeps, full: str) -> str | None:
+    response = await deps.client.get(f"/repos/{full}")
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return response.json().get("default_branch") or "main"
+
+
+def _decode(payload: dict[str, Any], path: str) -> dict[str, Any]:
+    """Turn a contents payload into text, or say why it cannot be read.
+
+    GitHub answers with base64 for a file it can inline and with `encoding: none` for one
+    too large for the contents endpoint; both are refused plainly rather than guessed at.
+    """
+    if payload.get("type") != "file":
+        return {"error": f"{path} is not a file"}
+    if path.lower().endswith(tuple(BINARY_SUFFIXES)):
+        return {"error": f"{path} is a binary file; I only read text"}
+    if payload.get("encoding") != "base64":
+        return {"error": f"{path} is too large to read through the contents API"}
+    try:
+        raw = base64.b64decode(payload.get("content") or "")
+        text = raw.decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError):
+        return {"error": f"{path} is a binary file; I only read text"}
+    result: dict[str, Any] = {
+        "path": payload.get("path", path),
+        "bytes": payload.get("size", len(raw)),
+        "truncated": False,
+        "content": text,
+    }
+    if len(text) > FILE_MAX_CHARS:
+        result["content"] = text[:FILE_MAX_CHARS]
+        result["truncated"] = True
+        result["note"] = f"truncated to the first {FILE_MAX_CHARS} characters of {len(text)}"
+    return result
+
+
+async def list_files(deps: GitHubDeps, repo: str, path: str = "") -> dict[str, Any]:
+    """Every file on the default branch, one recursive tree call, capped at 200 paths.
+
+    Added 2026-09-12 on the architect's ruling: a tester asked what a repository implements
+    and the agent could only see commit metadata, so it answered honestly that it could not
+    tell. Directories are dropped — a name with no bytes behind it answers nothing.
+    """
+    full = await _qualify(deps, repo)
+    branch = await _default_branch(deps, full)
+    if branch is None:
+        return {"error": f"no repository named {full}, or the token cannot see it"}
+    response = await deps.client.get(
+        f"/repos/{full}/git/trees/{branch}", params={"recursive": "1"}
+    )
+    if response.status_code == 404:
+        return {"error": f"no branch {branch} on {full}"}
+    response.raise_for_status()
+    prefix = path.strip("/")
+    files = [
+        {"path": entry["path"], "size": entry.get("size", 0)}
+        for entry in response.json().get("tree", [])
+        if entry.get("type") == "blob"
+        and (not prefix or entry["path"].startswith(f"{prefix}/") or entry["path"] == prefix)
+    ]
+    result: dict[str, Any] = {
+        "repo": full,
+        "branch": branch,
+        "files": files[:TREE_MAX_PATHS],
+        "truncated": len(files) > TREE_MAX_PATHS,
+    }
+    if result["truncated"]:
+        result["note"] = (
+            f"{len(files)} files match; showing the first {TREE_MAX_PATHS}. "
+            "Narrow it with the path argument."
+        )
+    return result
+
+
+async def read_file(deps: GitHubDeps, repo: str, path: str) -> dict[str, Any]:
+    """One text file from the default branch, base64-decoded and capped at 24 KB."""
+    full = await _qualify(deps, repo)
+    response = await deps.client.get(f"/repos/{full}/contents/{path.lstrip('/')}")
+    if response.status_code == 404:
+        return {"error": f"no file at {path} in {full}"}
+    response.raise_for_status()
+    return {"repo": full, **_decode(response.json(), path)}
+
+
+async def get_readme(deps: GitHubDeps, repo: str) -> dict[str, Any]:
+    """The repository's README, whatever it is named. The first thing to read about a repo."""
+    full = await _qualify(deps, repo)
+    response = await deps.client.get(f"/repos/{full}/readme")
+    if response.status_code == 404:
+        return {"error": f"no README in {full}"}
+    response.raise_for_status()
+    payload = response.json()
+    return {"repo": full, **_decode(payload, payload.get("path", "README"))}

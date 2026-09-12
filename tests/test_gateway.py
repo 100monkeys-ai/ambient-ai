@@ -83,3 +83,21 @@ def test_no_event_carries_a_full_phone_number(outbox):
     assert "15551234567" not in captured
     assert "15559876543" not in captured
     assert "ghp_" not in captured
+
+
+def test_sms_keeps_the_four_hundred_and_eighty_character_reply_limit(outbox, monkeypatch):
+    """SMS is billed and segmented; the cap stays where ADR-009's reply path put it."""
+    upsert_sender(PHONE)
+    set_token(PHONE, "ghp_testtoken")
+    limits: list[int] = []
+
+    async def fake_run_mention(profile, body, **kwargs):
+        limits.append(kwargs["max_reply_chars"])
+        return REPLY
+
+    monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", fake_run_mention)
+    monkeypatch.setattr(
+        "ambient_ai.gateway.handlers.schedule_extraction", lambda profile, transcript: None
+    )
+    post_sms(TestClient(create_app()), "@agent what is implemented in ambient-ai")
+    assert limits == [480]

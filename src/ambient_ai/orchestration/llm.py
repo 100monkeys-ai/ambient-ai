@@ -29,11 +29,17 @@ from ambient_ai.settings import LLM_MODEL_ID
 PLAN_SETTINGS = AnthropicModelSettings(max_tokens=1024, anthropic_effort="low")
 """Orchestrator: one small structured Plan, no prose. Effort low; the decision is shallow."""
 
-SYNTHESIS_SETTINGS = AnthropicModelSettings(max_tokens=512, anthropic_effort="low")
-"""Synthesis: at most 480 characters of SMS. 512 output tokens is more than three segments."""
+SYNTHESIS_SETTINGS = AnthropicModelSettings(max_tokens=1024, anthropic_effort="low")
+"""Synthesis: 480 characters on SMS, 1500 on Telegram. Raised from 512 on 2026-09-12 after
+the first live repository summary stopped mid-word at 1436 characters — the cap, not the
+instruction, ended the sentence. 1024 output tokens covers the longer transport limit."""
 
-EXECUTION_SETTINGS = AnthropicModelSettings(max_tokens=1024, anthropic_effort="low")
-"""Execution Agent: two tool calls and a short finding. The slowest step; measured below."""
+EXECUTION_SETTINGS = AnthropicModelSettings(max_tokens=2048, anthropic_effort="low")
+"""Execution Agent: up to eight tool calls and a finding that can carry what a README and
+three source files say. Raised from 1024 on 2026-09-12 when the agent gained read access to
+repository contents: a summary of what a repository implements does not fit in 1024 tokens
+beside the tool calls that fetched it. Effort stays low and the model stays Sonnet, because
+the 30-second bound in ADR-009's trigger 1 is unchanged."""
 
 EXTRACTOR_SETTINGS = AnthropicModelSettings(max_tokens=1024)
 """Extractor: a short list of facts. `claude-haiku-4-5` takes no effort setting."""

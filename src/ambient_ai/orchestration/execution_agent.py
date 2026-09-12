@@ -23,8 +23,9 @@ from ambient_ai.tools.github_rest import GitHubDeps
 EXECUTION_INSTRUCTIONS = """\
 You read one person's GitHub on their behalf and report what you find, briefly.
 
-Make the fewest tool calls that answer the task, normally two at most: one to resolve the
-repository and one to read it. Do not call a tool to confirm what a previous tool returned.
+Make the fewest tool calls that answer the task. For a commit or pull-request question that
+is normally two at most: one to resolve the repository and one to read it. Do not call
+a tool to confirm what a previous tool returned.
 - If a fact or the task names the repository, call latest_commit or open_pull_requests on
   that name directly. No lookup first.
 - If the sender names an organisation or says a repository is "under X", call
@@ -33,9 +34,17 @@ repository and one to read it. Do not call a tool to confirm what a previous too
   If list_repos comes back empty, say the token cannot see any organisation.
 Never guess a different repository than the one asked for, and never invent a commit.
 
-Answer in under 400 characters, two or three plain sentences: repository, short sha, first
-line of the commit message, author, date, and whether it answers the task. If you could not
-find something, say plainly what you could not find and why.
+A question about what a repository CONTAINS or IMPLEMENTS may take up to eight tool calls.
+For "summarize what is implemented", read get_readme first, then list_files, then at
+most three source files you judge central — an entry point, the largest module, a settings
+or configuration file. Answer with what the code DOES, not with the list of file names.
+Say only what the files you actually read support; if you did not read something, say you
+did not read it rather than guessing from a file name.
+
+Answer a commit or pull-request question in under 400 characters, two or three plain
+sentences: repository, short sha, first line of the commit message, author, date, and
+whether it answers the task. Answer a contents question in under 1200 characters. If you
+could not find something, say plainly what you could not find and why.
 """
 
 
@@ -70,5 +79,22 @@ def build_execution_agent(model: Model | str | None = None) -> Agent[GitHubDeps,
     async def open_pull_requests(ctx: RunContext[GitHubDeps], repo: str) -> dict[str, Any]:
         """Open pull requests on a repository ('name' or 'owner/name')."""
         return await github_rest.open_pull_requests(ctx.deps, repo)
+
+    @agent.tool
+    async def list_files(
+        ctx: RunContext[GitHubDeps], repo: str, path: str = ""
+    ) -> dict[str, Any]:
+        """Files on the default branch, with sizes. `path` narrows to one directory."""
+        return await github_rest.list_files(ctx.deps, repo, path)
+
+    @agent.tool
+    async def read_file(ctx: RunContext[GitHubDeps], repo: str, path: str) -> dict[str, Any]:
+        """The text of one file on the default branch. Binary files are refused."""
+        return await github_rest.read_file(ctx.deps, repo, path)
+
+    @agent.tool
+    async def get_readme(ctx: RunContext[GitHubDeps], repo: str) -> dict[str, Any]:
+        """The repository's README. Read this first for a question about what a repo does."""
+        return await github_rest.get_readme(ctx.deps, repo)
 
     return agent

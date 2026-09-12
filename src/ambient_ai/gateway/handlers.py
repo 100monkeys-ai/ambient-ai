@@ -24,6 +24,7 @@ from ambient_ai.identity import lookup_sender, upsert_sender
 from ambient_ai.identity.magic_link import portal_link
 from ambient_ai.memory import schedule_extraction, transcript_of
 from ambient_ai.orchestration.run import is_fallback_reply, run_mention
+from ambient_ai.settings import SMS_REPLY_MAX_CHARS
 from ambient_ai.telemetry import log, redact
 from ambient_ai.tools import credentials
 
@@ -54,13 +55,15 @@ def handle_mention(
     link_reply: Reply | None = None,
     private: bool = True,
     forget_message: Forget | None = None,
+    max_reply_chars: int = SMS_REPLY_MAX_CHARS,
 ) -> None:
     """`link_reply` carries the portal link when it must travel privately; defaults to `reply`.
 
     `private` is True when the conversation is one-to-one: SMS always is, a Telegram private
     chat is, a Telegram group is not. `forget_message` deletes the sender's own message on
     transports that can, and reports whether it worked, so a pasted token does not stay on
-    their screen.
+    their screen. `max_reply_chars` is the transport's reply limit: SMS is billed in
+    160-character segments, Telegram is not, so each webhook passes its own.
     """
     deliver_link = link_reply or reply
     intent = credentials.parse_intent(body)
@@ -89,7 +92,13 @@ def handle_mention(
         return await _apply(sender, credentials.CredentialIntent(action=action, tool=tool))
 
     answer = asyncio.run(
-        run_mention(profile, safe_body, private=private, credentials_fn=credentials_fn)
+        run_mention(
+            profile,
+            safe_body,
+            private=private,
+            credentials_fn=credentials_fn,
+            max_reply_chars=max_reply_chars,
+        )
     )
     reply(answer)
     if not managed and not is_fallback_reply(answer):

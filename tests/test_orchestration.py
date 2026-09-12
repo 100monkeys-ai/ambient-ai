@@ -132,13 +132,16 @@ def test_orchestrator_has_zero_tools():
     assert agent.output_type is Plan
 
 
-def test_execution_agent_has_exactly_the_four_github_tools():
+def test_execution_agent_has_exactly_the_seven_github_tools():
     agent = build_execution_agent(TestModel())
     assert set(agent._function_toolset.tools) == {
         "list_repos",
         "get_repo",
         "latest_commit",
         "open_pull_requests",
+        "list_files",
+        "read_file",
+        "get_readme",
     }
 
 
@@ -444,3 +447,136 @@ async def test_credentials_in_a_group_reply_is_on_the_stream_as_a_fallback():
     )
     assert reply == "Manage your tools in a private chat with me."
     assert_fallback_event(reply)
+
+
+# --- reading a repository's contents, end to end ------------------------------------------
+# Architect's ruling of 2026-09-12 21:05 UTC: a tester asked what a repository implements and
+# the bot could only see commit metadata. The Execution Agent now reads the files.
+
+README_MARKER = "AMBIENT_README_BODY_MARKER"
+README_TEXT = f"# Ambient AI\n\n{README_MARKER}: an agent that lives as a phone contact.\n"
+
+
+def readme_transport(captured: list[httpx.Request]) -> httpx.MockTransport:
+    import base64
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        if request.url.path.endswith("/readme"):
+            return httpx.Response(
+                200,
+                json={
+                    "name": "README.md",
+                    "path": "README.md",
+                    "type": "file",
+                    "size": len(README_TEXT),
+                    "encoding": "base64",
+                    "content": base64.b64encode(README_TEXT.encode()).decode(),
+                },
+            )
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    return httpx.MockTransport(handler)
+
+
+def readme_model() -> FunctionModel:
+    """Plans a GitHub step, calls get_readme once, then synthesises from the finding."""
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        if _is_orchestrator(info):
+            return _plan_response(
+                info, needs_github=True, github_task="summarize what is implemented"
+            )
+        tool_names = {t.name for t in info.function_tools}
+        if "get_readme" in tool_names:
+            returned = [
+                part.content
+                for m in messages
+                for part in getattr(m, "parts", [])
+                if part.part_kind == "tool-return"
+            ]
+            if not returned:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="get_readme", args={"repo": "100monkeys-ai/ambient-ai"}
+                        )
+                    ]
+                )
+            return ModelResponse(parts=[TextPart(f"findings: {json.dumps(returned)}")])
+        prompt = "".join(
+            str(part.content)
+            for m in messages
+            for part in getattr(m, "parts", [])
+            if part.part_kind == "user-prompt"
+        )
+        return ModelResponse(parts=[TextPart(prompt)])
+
+    return FunctionModel(respond, model_name="fake-readme")
+
+
+async def test_a_content_question_reads_the_readme_and_answers_under_the_given_limit():
+    captured: list[httpx.Request] = []
+    sender = SenderProfile(phone="+15551230001", github_token="ghp_sender_a")
+    reply = await run_mention(
+        sender,
+        "@agent summarize what is implemented in 100monkeys-ai/ambient-ai",
+        model=readme_model(),
+        recall_fn=stub_recall,
+        transport=readme_transport(captured),
+        max_reply_chars=1500,
+    )
+    assert any(r.url.path.endswith("/readme") for r in captured)
+    assert README_MARKER in reply
+    assert len(reply) <= 1500
+
+
+async def test_the_sms_limit_still_clips_the_same_content_answer():
+    captured: list[httpx.Request] = []
+    sender = SenderProfile(phone="+15551230001", github_token="ghp_sender_a")
+    reply = await run_mention(
+        sender,
+        "@agent summarize what is implemented in 100monkeys-ai/ambient-ai " * 30,
+        model=readme_model(),
+        recall_fn=stub_recall,
+        transport=readme_transport(captured),
+    )
+    assert len(reply) <= SMS_REPLY_MAX_CHARS
+
+
+async def test_file_contents_never_reach_a_telemetry_event():
+    """Telemetry carries counts, not the repository's source. The extractor sees only the
+    sender's message and the reply, so a tool result must not leak through the stream."""
+    captured: list[httpx.Request] = []
+    sender = SenderProfile(phone="+15551230001", github_token="ghp_sender_a")
+    await run_mention(
+        sender,
+        "@agent summarize what is implemented in 100monkeys-ai/ambient-ai",
+        model=readme_model(),
+        recall_fn=stub_recall,
+        transport=readme_transport(captured),
+        max_reply_chars=1500,
+    )
+    assert README_MARKER not in str([e.fields for e in log.events])
+
+
+def token_reply_model(secret: str) -> FunctionModel:
+    """Synthesis writes a reply echoing a token-shaped string it read out of a file."""
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        if _is_orchestrator(info):
+            return _plan_response(info)
+        return ModelResponse(parts=[TextPart(f"The config file holds {secret} in plain text.")])
+
+    return FunctionModel(respond, model_name="fake-token-reply")
+
+
+async def test_a_reply_echoing_a_token_found_in_a_file_is_scrubbed():
+    secret = "ghp_" + "A1b2C3d4E5f6G7h8I9j0"
+    sender = SenderProfile(phone="+15551230001", github_token="ghp_sender_a")
+    reply = await run_mention(
+        sender, "@agent what is in the config", model=token_reply_model(secret),
+        recall_fn=stub_recall,
+    )
+    assert secret not in reply
+    assert "[token]" in reply
