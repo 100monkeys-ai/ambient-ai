@@ -26,6 +26,7 @@ from ambient_ai.tools.github_rest import GitHubDeps, github_client
 
 RecallFn = Callable[[SenderProfile], Awaitable[list[str]]]
 CredentialsFn = Callable[[str, str], Awaitable[str]]
+AccountFn = Callable[[], Awaitable[str]]
 
 GITHUB_UNAVAILABLE_REPLY = "I couldn't reach GitHub just now. Try again in a minute."
 MEMORY_UNAVAILABLE_REPLY = "I couldn't reach my memory just now. Try again in a minute."
@@ -36,6 +37,10 @@ GITHUB_NOT_CONNECTED_REPLY = (
 CREDENTIALS_PRIVATE_ONLY_REPLY = "Manage your tools in a private chat with me."
 """A group is the wrong room for one person's credential, so the intent is refused there and
 nothing is read from or written to the store."""
+ACCOUNT_PRIVATE_ONLY_REPLY = "Ask me privately to log out or forget you."
+"""Same rule as a credential, higher stakes: in a group anyone can type it and the person it
+would erase need not even be in the room. Spelled the same as `account.GROUP_REFUSAL` — this
+module cannot import that one without a cycle through memory, so a test pins them equal."""
 
 SYNTHESIS_TEMPLATE = """\
 You are Ambient AI, a phone contact replying in a group chat.
@@ -88,6 +93,7 @@ FALLBACK_REPLIES = frozenset(
         LLM_UNAVAILABLE_REPLY,
         GITHUB_NOT_CONNECTED_REPLY,
         CREDENTIALS_PRIVATE_ONLY_REPLY,
+        ACCOUNT_PRIVATE_ONLY_REPLY,
     }
 )
 """Every reply this module returns without a model writing it."""
@@ -122,12 +128,15 @@ async def run_mention(
     transport: httpx.AsyncBaseTransport | None = None,
     private: bool = True,
     credentials_fn: CredentialsFn | None = None,
+    account_fn: AccountFn | None = None,
     max_reply_chars: int = SMS_REPLY_MAX_CHARS,
 ) -> str:
     """Answer one @mention for one sender. Returns the SMS text; the gateway sends it.
 
     `private` says the conversation is one-to-one (SMS always is; a Telegram private chat is);
-    `credentials_fn` is how the gateway applies a credential action it alone can perform.
+    `credentials_fn` is how the gateway applies a credential action it alone can perform, and
+    `account_fn` the same for a request to be forgotten: both land in the gateway's own
+    deterministic handler, never in a tool the model can reach.
     Keyword arguments are test seams: `model` replaces the LLM for every agent, `recall_fn`
     replaces the Cortex read, `transport` replaces the network under the GitHub client.
     `max_reply_chars` is the transport's limit: SMS passes 480, Telegram 1500.
@@ -153,6 +162,13 @@ async def run_mention(
         needs_github=plan.needs_github,
         direct=plan.direct_reply is not None,
     )
+    if plan.account_action == "forget":
+        if not private or account_fn is None:
+            return fallback(who, ACCOUNT_PRIVATE_ONLY_REPLY, status="refused")
+        reply = clip(await account_fn(), max_reply_chars)
+        log.emit("orchestration.reply", sender=who, chars=len(reply), path="account")
+        return reply
+
     if plan.credentials_action != "none":
         if not private or credentials_fn is None:
             return fallback(who, CREDENTIALS_PRIVATE_ONLY_REPLY, status="refused")

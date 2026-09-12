@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS senders (
     phone TEXT PRIMARY KEY,
     verified_at TEXT,
     created_at TEXT NOT NULL,
-    telegram_user_id TEXT
+    telegram_user_id TEXT,
+    forget_requested_at TEXT
 )
 """
 
@@ -35,7 +36,10 @@ CREATE TABLE IF NOT EXISTS credentials (
 )
 """
 
-ADDED_COLUMNS = ("ALTER TABLE senders ADD COLUMN telegram_user_id TEXT",)
+ADDED_COLUMNS = (
+    "ALTER TABLE senders ADD COLUMN telegram_user_id TEXT",
+    "ALTER TABLE senders ADD COLUMN forget_requested_at TEXT",
+)
 TELEGRAM_INDEX = (
     "CREATE UNIQUE INDEX IF NOT EXISTS senders_telegram_user_id ON senders (telegram_user_id)"
 )
@@ -45,7 +49,7 @@ refuses `ADD COLUMN ... UNIQUE` outright: writing it inline would work on a fres
 fail on the one the demo is running against. Columns are only ever added; provisional `tg:`
 records are merged onto a number by adopt_telegram_contact when a sender shares a contact."""
 
-COLUMNS = "phone, verified_at, created_at, telegram_user_id"
+COLUMNS = "phone, verified_at, created_at, telegram_user_id, forget_requested_at"
 
 GITHUB = "github"
 """The one integration the store itself names, and only to migrate the columns it replaced."""
@@ -84,6 +88,9 @@ class SenderProfile(BaseModel):
     github_token: str | None = None
     created_at: datetime | None = None
     telegram_user_id: str | None = None
+    forget_requested_at: datetime | None = None
+    """When this sender last asked to be forgotten, and nothing more: the confirmation window
+    is checked against it, and it is cleared the moment the request expires."""
     github_login: str | None = None
     token_added_at: datetime | None = None
     credentials: dict[str, Credential] = {}
@@ -159,7 +166,7 @@ def _credentials(conn: sqlite3.Connection, phone: str) -> dict[str, Credential]:
 
 
 def _row_to_profile(row: tuple, credentials: dict[str, Credential]) -> SenderProfile:
-    phone, verified_at, created_at, telegram_user_id = row
+    phone, verified_at, created_at, telegram_user_id, forget_requested_at = row
     github = credentials.get(GITHUB)
     return SenderProfile(
         phone=phone,
@@ -167,6 +174,9 @@ def _row_to_profile(row: tuple, credentials: dict[str, Credential]) -> SenderPro
         github_token=github.token if github else None,
         created_at=datetime.fromisoformat(created_at),
         telegram_user_id=telegram_user_id,
+        forget_requested_at=(
+            datetime.fromisoformat(forget_requested_at) if forget_requested_at else None
+        ),
         github_login=github.login if github else None,
         token_added_at=github.added_at if github else None,
         credentials=credentials,
@@ -247,6 +257,50 @@ def clear_credential(phone: str, integration: str) -> bool:
             "DELETE FROM credentials WHERE phone = ? AND integration = ?", (phone, integration)
         ).rowcount
     return deleted > 0
+
+
+def mark_forget_requested(phone: str, when: datetime | None = None) -> None:
+    """Record that this sender asked to be forgotten. Deletes nothing by itself."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE senders SET forget_requested_at = ? WHERE phone = ?",
+            ((when or datetime.now(UTC)).isoformat(), phone),
+        )
+
+
+def clear_forget_request(phone: str) -> None:
+    """Drop a pending forget request, so a stale `confirm` can never complete it."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE senders SET forget_requested_at = NULL WHERE phone = ?", (phone,)
+        )
+
+
+def delete_sender(phone: str) -> bool:
+    """Erase this sender: every credential, then the record itself with its Telegram mapping.
+
+    The credentials go first, so a failure between the two statements leaves an identity with
+    no keys rather than keys with no owner. Returns whether a sender row was there to delete.
+    """
+    with _connect() as conn:
+        conn.execute("DELETE FROM credentials WHERE phone = ?", (phone,))
+        deleted = conn.execute("DELETE FROM senders WHERE phone = ?", (phone,)).rowcount
+    return deleted > 0
+
+
+def memory_keys(profile: SenderProfile) -> list[str]:
+    """Every sender key whose memory page belongs to this person.
+
+    A Telegram sender who has shared their number owns two pages: the phone-keyed one and the
+    hashed provisional one written before the merge. Forgetting has to reach both, or the
+    older page outlives the person who asked to be forgotten.
+    """
+    keys = [profile.phone]
+    if profile.telegram_user_id:
+        provisional = provisional_key(profile.telegram_user_id)
+        if provisional != profile.phone:
+            keys.append(provisional)
+    return keys
 
 
 def set_token(phone: str, github_token: str, *, login: str | None = None) -> None:

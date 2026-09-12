@@ -8,6 +8,7 @@ and appended to after that, one dated bullet line per fact. Nothing is written w
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -33,9 +34,10 @@ from ambient_ai.telemetry import log, redact
 PAGE_TITLE = "Sender memory"
 PAGE_HEADING = "Memory"
 PAGE_SOFT_DELETE_TOOL = "pages.soft_delete"
-"""Dotted like the rest; see the note on PAGE_READ_TOOL. Used only when a provisional page
-is folded into a phone-keyed one, so the old page stops answering reads but stays restorable
-from the audit log."""
+"""Dotted like the rest; see the note on PAGE_READ_TOOL. Used when a provisional page is
+folded into a phone-keyed one, and when a sender asks to be forgotten: the page stops
+answering reads but stays restorable from the audit log, which is what a soft delete is for
+when the deletion was one person\'s command typed into a chat."""
 
 
 def memory_title(sender: str) -> str:
@@ -125,6 +127,36 @@ async def remember(
         created = await _append_or_create(toolset, path, memory_title(sender.phone), content)
     log.emit("memory.written", sender=who, facts=len(lines), created=created)
     return True
+
+
+async def forget_memory_pages(
+    senders: Sequence[str], *, toolset_factory: ToolsetFactory | None = None
+) -> int:
+    """Soft-delete every memory page these sender keys name. Returns how many pages went.
+
+    Tolerant by design: a sender who never said anything worth remembering has no page, and
+    that is a successful forget and not an error. Anything other than a missing page is
+    raised, so the caller can say the memory step failed rather than claim it succeeded.
+    """
+    if not env("CORTEX_MCP_URL"):
+        log.emit("memory.unavailable", sender=redact(senders[0]), reason="CORTEX_MCP_URL unset")
+        return 0
+    paths = list(dict.fromkeys(memory_path(sender) for sender in senders))
+    deleted = 0
+    async with (toolset_factory or cortex_toolset)() as toolset:
+        require_tool({t.name for t in await toolset.list_tools()}, PAGE_SOFT_DELETE_TOOL)
+        for path in paths:
+            try:
+                await call_cortex(
+                    toolset, PAGE_SOFT_DELETE_TOOL, {"pathOrId": path, **cortex_scope()}
+                )
+            except Exception as exc:
+                if not any(marker in str(exc).lower() for marker in NOT_FOUND_MARKERS):
+                    raise
+                continue
+            deleted += 1
+    log.emit("memory.forgotten", sender=redact(senders[0]), pages=deleted)
+    return deleted
 
 
 async def migrate_memory_page(

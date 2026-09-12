@@ -5,9 +5,11 @@ through run_mention and the reply text goes out through `reply`, a callback the 
 adapter built (SMS closes over send_sms; Telegram over sendMessage to the chat). Nothing
 past this line knows which transport the message came from.
 
-Credential management is settled here, before anything else, because it is the one branch
-that must never reach a model: `private` says whether the conversation is one-to-one, and a
-credential intent in a group is refused with nothing stored, logged, or extracted.
+Credential management and being forgotten are settled here, before anything else, because
+they are the branches that must never reach a model: `private` says whether the conversation
+is one-to-one, and either intent in a group is refused with nothing stored, logged, deleted,
+or extracted. Forgetting takes a confirmation inside five minutes; the model can ask for one
+through the plan, but only this module performs it.
 
 Every integration is optional, so a known sender is answered by the plan whether or not they
 have connected anything. The connect link appears in exactly one place: the plan asked for
@@ -35,7 +37,7 @@ from ambient_ai.orchestration.run import (
 )
 from ambient_ai.settings import SMS_REPLY_MAX_CHARS
 from ambient_ai.telemetry import log, redact
-from ambient_ai.tools import credentials
+from ambient_ai.tools import account, credentials
 
 Reply = Callable[[str], None]
 Forget = Callable[[], bool]
@@ -75,6 +77,11 @@ def handle_mention(
     160-character segments, Telegram is not, so each webhook passes its own.
     """
     deliver_link = link_reply or reply
+    forget = account.parse_intent(body)
+    if forget.action != "none":
+        _handle_forget(sender, forget, reply, private=private)
+        return
+
     intent = credentials.parse_intent(body)
     if intent.action != "none":
         _handle_credentials(sender, intent, reply, private=private, forget_message=forget_message)
@@ -95,12 +102,19 @@ def handle_mention(
         managed = True
         return await _apply(sender, credentials.CredentialIntent(action=action, tool=tool))
 
+    async def account_fn() -> str:
+        """The plan heard "forget me" in plain words; it still only asks for the confirmation."""
+        nonlocal managed
+        managed = True
+        return await _apply_forget(sender, account.ForgetIntent(action="request"))
+
     answer = asyncio.run(
         run_mention(
             profile,
             safe_body,
             private=private,
             credentials_fn=credentials_fn,
+            account_fn=account_fn,
             max_reply_chars=max_reply_chars,
         )
     )
@@ -136,6 +150,23 @@ def _handle_credentials(
     if intent.token is not None and forget_message is not None and not forget_message():
         text += credentials.DELETE_FAILED_NOTE
     reply(text)
+
+
+def _handle_forget(
+    sender: str, intent: account.ForgetIntent, reply: Reply, *, private: bool
+) -> None:
+    """Forgetting is refused outright in a group: nothing is read, marked, or deleted there."""
+    if not private:
+        log.emit("account.refused", sender=redact(sender), reason="group chat")
+        reply(account.GROUP_REFUSAL)
+        return
+    reply(asyncio.run(_apply_forget(sender, intent)))
+
+
+async def _apply_forget(sender: str, intent: account.ForgetIntent) -> str:
+    text, outcome = await account.handle(sender, intent)
+    log.emit(f"account.{outcome}", sender=redact(sender))
+    return text
 
 
 async def _apply(sender: str, intent: credentials.CredentialIntent) -> str:

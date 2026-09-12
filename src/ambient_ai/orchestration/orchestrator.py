@@ -39,6 +39,11 @@ class Plan(BaseModel):
         description="Which tool the credential action is about, lowercase, e.g. 'github'. "
         "Null when credentials_action is 'none'.",
     )
+    account_action: Literal["forget", "none"] = Field(
+        default="none",
+        description="'forget' when the sender asks to be logged out, deleted, or forgotten "
+        "entirely. 'none' for every other message, including disconnecting one tool.",
+    )
 
 
 ORCHESTRATOR_INSTRUCTIONS = """\
@@ -63,6 +68,9 @@ Rules:
   list, add, or remove and credentials_tool to the tool name, and leave needs_memory,
   needs_github and direct_reply alone. You will never be shown a token and must never ask
   for one in direct_reply; the gateway handles the secret itself.
+- If the message asks to be logged out, deleted, or forgotten entirely ("log me out",
+  "forget everything about me", "delete my data"), set account_action to forget and leave
+  every other field alone. Disconnecting one tool is credentials_action remove, not this.
 """
 
 
