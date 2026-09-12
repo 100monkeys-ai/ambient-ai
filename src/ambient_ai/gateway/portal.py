@@ -1,4 +1,9 @@
-"""The portal: GET /portal/{token} proves the number; POST stores the pasted GitHub token."""
+"""The portal: GET /portal/{token} proves the number; POST stores the pasted GitHub token.
+
+The pasted token is checked against GitHub before it is stored, the same check the `/tools`
+command runs, because a token stored unchecked only shows up as a failed answer several
+messages later — by which time nobody suspects the token.
+"""
 
 from datetime import UTC, datetime
 from html import escape
@@ -10,6 +15,7 @@ from fastapi.responses import HTMLResponse
 from ambient_ai.identity import set_token, upsert_sender
 from ambient_ai.identity.magic_link import verify
 from ambient_ai.telemetry import log, redact
+from ambient_ai.tools.credentials import validate_github_token
 
 router = APIRouter()
 
@@ -27,8 +33,12 @@ FORM = """<p>Your number ending in <strong>{last4}</strong> is verified.</p>
 <input id="github_token" name="github_token" type="password" autocomplete="off" required>
 <button type="submit">Connect GitHub</button></form>"""
 
-DONE = """<p>GitHub is connected for the number ending in <strong>{last4}</strong>.</p>
+DONE = """<p>GitHub is connected as <strong>{login}</strong> for the number ending in
+<strong>{last4}</strong>.</p>
 <p>Go back to your thread and mention <code>@agent</code> again.</p>"""
+
+REJECTED = """<p>That token was rejected by GitHub; nothing was saved.</p>
+<p>Check it has not expired, then paste a current one.</p>""" + FORM
 
 
 def _phone_or_404(token: str) -> str:
@@ -51,6 +61,11 @@ async def open_portal(token: str) -> str:
 async def connect_github(token: str, github_token: Annotated[str, Form()]) -> str:
     phone = _phone_or_404(token)
     upsert_sender(phone, verified_at=datetime.now(UTC))
-    set_token(phone, github_token.strip())
+    last4 = escape(redact(phone)[-4:])
+    login = await validate_github_token(github_token.strip())
+    if login is None:
+        log.emit("tools.rejected", sender=redact(phone), tool="github")
+        return PAGE.format(content=REJECTED.format(last4=last4))
+    set_token(phone, github_token.strip(), login=login)
     log.emit("tools.connected", sender=redact(phone), tool="github")
-    return PAGE.format(content=DONE.format(last4=escape(redact(phone)[-4:])))
+    return PAGE.format(content=DONE.format(last4=last4, login=escape(login)))
