@@ -273,3 +273,22 @@ async def test_read_memory_page_raises_when_the_server_has_no_pages_read_tool():
     cortex = FakeCortex(tool_names=("pages_read", "pages_create"))
     with pytest.raises(RuntimeError, match="pages.read"):
         await read_memory_page("senders/abc", toolset_factory=cortex.open)
+
+
+def test_cortex_toolset_silences_only_the_session_termination_warning(monkeypatch, caplog):
+    """The MCP client logs `Session termination failed: 500` on every close because the
+    server refuses the session DELETE. It is cosmetic and it would sit on the projector next
+    to each memory event, so that one message is filtered; every other warning still passes.
+    """
+    import logging
+
+    monkeypatch.setenv("CORTEX_MCP_URL", "http://cortex.test/mcp")
+    from ambient_ai.orchestration.context_agent import cortex_toolset
+
+    cortex_toolset()
+    logger = logging.getLogger("mcp.client.streamable_http")
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        logger.warning("Session termination failed: %s", 500)
+        logger.warning("the stream closed unexpectedly")
+    assert "Session termination failed" not in caplog.text
+    assert "the stream closed unexpectedly" in caplog.text

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Any
@@ -31,9 +32,29 @@ renamed tool behind a fallback, so the name is asserted, not searched for."""
 NOT_FOUND_MARKERS = ("not found", "not_found", "404", "does not exist", "no page")
 
 
+SESSION_TERMINATION_NOISE = "Session termination failed"
+"""The MCP client logs this at WARNING on every close: the Cortex server answers the
+streamable-HTTP session DELETE with a 500. Nothing is wrong and nothing is retried, but the
+line would print beside every memory event on the projector during the demo. Exactly that
+message is dropped; every other warning from the client still reaches the log."""
+
+
+def _drop_session_termination_noise(record: logging.LogRecord) -> bool:
+    return not record.getMessage().startswith(SESSION_TERMINATION_NOISE)
+
+
+def silence_session_termination_noise() -> None:
+    """Install the filter once on the MCP client's logger. Idempotent."""
+    logger = logging.getLogger("mcp.client.streamable_http")
+    if _drop_session_termination_noise not in logger.filters:
+        logger.addFilter(_drop_session_termination_noise)
+
+
 def cortex_toolset() -> AbstractAsyncContextManager[Any]:
     """The one MCPToolset construction on the memory path; the writer uses it too."""
     from pydantic_ai.mcp import MCPToolset
+
+    silence_session_termination_noise()
 
     url = env("CORTEX_MCP_URL")
     token = env("CORTEX_MCP_TOKEN")
