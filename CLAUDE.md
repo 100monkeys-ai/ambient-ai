@@ -25,11 +25,11 @@ One package per bounded context under `src/ambient_ai/`:
 |---|---|
 | `gateway/` | FastAPI app factory, `POST /webhook/sms` (empty TwiML `<Response>` at once; `@agent` messages go to a background task), `handle_mention()` in `handlers.py`, `send_sms()` in `sms.py`, and the portal at `/portal/{token}`. |
 | `identity/` | SQLite sender store keyed by E.164 number, and the signed magic link that proves a number. |
-| `orchestration/` | The tool-less orchestrator that emits a `Plan`, and the ephemeral sub-agent factory (Context, Execution). |
+| `orchestration/` | `run_mention()` in `run.py`, the request loop the gateway calls; `orchestrator.py`, the tool-less agent that emits a flat `Plan` (`needs_memory`, `needs_github`, `github_task`, `direct_reply`); `context_agent.py`, `recall()` reading the sender's page `senders/<sha256(E.164)[:16]>` from Cortex over MCP; `execution_agent.py`, the per-request agent with three GitHub REST tools bound to the sender's token through `deps`; `llm.py`, the one place the provider is named. |
 | `memory/` | The asynchronous memory extractor: `novel_facts`, `preferences`, `should_update`. |
-| `tools/` | Per-sender tool credentials: the GitHub token the sender pasted in the portal. |
+| `tools/` | Per-sender tool credentials (`github.py`: the token the sender pasted in the portal) and the GitHub REST calls (`github_rest.py`: `list_repos`, `latest_commit`, `open_pull_requests`, 10 s timeout, compact dicts). |
 | `telemetry/` | In-process event log for the live dashboard, and `redact()`. |
-| `settings.py` | Environment variable names, `LLM_PROVIDER`, `LLM_MODEL_ID`, `MENTION`, `DB_PATH`/`PORTAL_BASE_URL` defaults. |
+| `settings.py` | Environment variable names, `LLM_PROVIDER`, `LLM_MODEL_ID`, `MENTION`, `SMS_REPLY_MAX_CHARS`, `OUTBOUND_TIMEOUT_SECONDS`, `DB_PATH`/`PORTAL_BASE_URL` defaults. `CORTEX_WORKSPACE` is optional: when set it is passed on every Cortex read so the shared token pointer cannot redirect it. |
 
 `tests/` mirrors the packages. `SOURCES/` holds the two source PDFs that define the product.
 
@@ -49,9 +49,9 @@ CI (`.github/workflows/ci.yml`) runs the same install, `ruff check .`, and `pyte
 
 ## What is real and what is stubbed
 
-Real: the app factory, the `@agent` filter on the webhook and its background hand-off, the SQLite sender store, the signed magic link and portal, `send_sms()` over the Twilio Messages API (10 s timeout; `FAKE_SMS_OUTBOX=<file>` records sends to a file instead), the telemetry event log, `redact()`, the pydantic models (`Plan`, `PlanStep`, `MemoryExtraction`, `SenderProfile`).
+Real: the app factory, the `@agent` filter on the webhook and its background hand-off, the SQLite sender store, the signed magic link and portal, `send_sms()` over the Twilio Messages API (10 s timeout; `FAKE_SMS_OUTBOX=<file>` records sends to a file instead), the whole orchestration path (`run_mention()`: plan, recall, execute, synthesize, reply, one telemetry event per step, and the honest short reply from ADR-009 on any recall, execute, or model failure), the Cortex MCP client in `recall()` (returns `[]` with a `memory.unavailable` event while `CORTEX_MCP_URL` is unset), the GitHub REST tools, the telemetry event log, `redact()`, the pydantic models (`Plan`, `MemoryExtraction`, `SenderProfile`). Tests never reach a model: `tests/conftest.py` sets `pydantic_ai.models.ALLOW_MODEL_REQUESTS = False`.
 
-Stubbed: everything that talks to an LLM, Cortex, or GitHub; `handle_mention()` answers a connected sender with a fixed acknowledgement until orchestration lands. Every unimplemented function raises `NotImplementedError` with a one-line message. Do not replace a stub with a placeholder that looks like real behaviour; replace it with the real thing or leave it raising.
+Stubbed: the memory extractor (`memory/extractor.py`, phase 4). Not yet exercised live: OpenAI (the account had no credits at 20:15 UTC), a real Cortex MCP server (no credential issued), real GitHub. Every unimplemented function raises `NotImplementedError` with a one-line message. Do not replace a stub with a placeholder that looks like real behaviour; replace it with the real thing or leave it raising.
 
 ## Lifecycle rules
 
