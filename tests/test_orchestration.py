@@ -294,3 +294,153 @@ def test_cortex_toolset_silences_only_the_session_termination_warning(monkeypatc
         logger.warning("the stream closed unexpectedly")
     assert "Session termination failed" not in caplog.text
     assert "the stream closed unexpectedly" in caplog.text
+
+
+# --- every fallback reply announces itself on the stream ------------------------------------
+# The projector showed a failed step but not which honest sentence went out (ledger, 20:54
+# UTC). Each early return now emits orchestration.reply with path="fallback" and the length.
+
+
+class ModelDown(Exception):
+    """Raised by the fake model so run_mention takes a failure branch."""
+
+
+def _is_orchestrator(info: AgentInfo) -> bool:
+    return bool(info.output_tools) and "needs_github" in json.dumps(
+        info.output_tools[0].parameters_json_schema
+    )
+
+
+def _plan_response(info: AgentInfo, **overrides) -> ModelResponse:
+    args = {
+        "reasoning": "test plan",
+        "needs_memory": False,
+        "needs_github": False,
+        "github_task": None,
+        "direct_reply": None,
+    }
+    args.update(overrides)
+    return ModelResponse(parts=[ToolCallPart(tool_name=info.output_tools[0].name, args=args)])
+
+
+def dead_model() -> FunctionModel:
+    """Every call raises: the orchestrator itself cannot produce a plan."""
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        raise ModelDown("provider is down")
+
+    return FunctionModel(respond, model_name="fake-dead")
+
+
+def plan_then_dead_model(**overrides) -> FunctionModel:
+    """Plans once, then raises: the failure lands on synthesis."""
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        if _is_orchestrator(info):
+            return _plan_response(info, **overrides)
+        raise ModelDown("provider is down")
+
+    return FunctionModel(respond, model_name="fake-plan-then-dead")
+
+
+def plan_only_model(**overrides) -> FunctionModel:
+    """Plans, then answers anything else with a fixed line."""
+
+    def respond(messages, info: AgentInfo) -> ModelResponse:
+        if _is_orchestrator(info):
+            return _plan_response(info, **overrides)
+        return ModelResponse(parts=[TextPart("synthesized")])
+
+    return FunctionModel(respond, model_name="fake-plan-only")
+
+
+def fallback_events() -> list:
+    return [
+        e
+        for e in log.events
+        if e.kind == "orchestration.reply" and e.fields.get("path") == "fallback"
+    ]
+
+
+def assert_fallback_event(reply: str) -> None:
+    events = fallback_events()
+    assert len(events) == 1, [e.fields for e in log.events if e.kind == "orchestration.reply"]
+    assert events[0].fields["chars"] == len(reply)
+    assert "5551230001" not in str(events[0].fields)
+
+
+async def test_model_failure_reply_is_on_the_stream_as_a_fallback():
+    sender = SenderProfile(phone="+15551230001", github_token="ghp_sender_a")
+    reply = await run_mention(sender, DEMO_MESSAGE, model=dead_model(), recall_fn=stub_recall)
+    assert reply == "I couldn't think that through just now. Try again in a minute."
+    assert_fallback_event(reply)
+
+
+async def test_synthesis_failure_reply_is_on_the_stream_as_a_fallback():
+    sender = SenderProfile(phone="+15551230001", github_token="ghp_sender_a")
+    reply = await run_mention(
+        sender,
+        DEMO_MESSAGE,
+        model=plan_then_dead_model(needs_memory=True),
+        recall_fn=stub_recall,
+    )
+    assert reply == "I couldn't think that through just now. Try again in a minute."
+    assert_fallback_event(reply)
+
+
+async def test_memory_failure_reply_is_on_the_stream_as_a_fallback():
+    async def dead_recall(sender: SenderProfile) -> list[str]:
+        raise ConnectionError("cortex is down")
+
+    sender = SenderProfile(phone="+15551230001", github_token="ghp_sender_a")
+    reply = await run_mention(
+        sender, DEMO_MESSAGE, model=plan_only_model(needs_memory=True), recall_fn=dead_recall
+    )
+    assert reply == "I couldn't reach my memory just now. Try again in a minute."
+    assert_fallback_event(reply)
+
+
+async def test_github_failure_reply_is_on_the_stream_as_a_fallback():
+    sender = SenderProfile(phone="+15551230001", github_token="ghp_sender_a")
+    reply = await run_mention(
+        sender,
+        DEMO_MESSAGE,
+        model=github_plan_model(),
+        recall_fn=stub_recall,
+        transport=failing_transport(),
+    )
+    assert reply == GITHUB_UNAVAILABLE_REPLY
+    assert reply == "I couldn't reach GitHub just now. Try again in a minute."
+    assert_fallback_event(reply)
+
+
+async def test_github_not_connected_reply_is_on_the_stream_as_a_fallback():
+    sender = SenderProfile(phone="+15551230001")
+    reply = await run_mention(
+        sender,
+        DEMO_MESSAGE,
+        model=plan_only_model(needs_github=True, github_task="latest commit"),
+        recall_fn=stub_recall,
+    )
+    assert reply == (
+        "I need your GitHub connected before I can check that. "
+        "Paste a token in your portal link."
+    )
+    assert_fallback_event(reply)
+
+
+async def test_credentials_in_a_group_reply_is_on_the_stream_as_a_fallback():
+    async def credentials_fn(action: str, tool: str) -> str:
+        raise AssertionError("a group must never reach the credential store")
+
+    sender = SenderProfile(phone="+15551230001", github_token="ghp_sender_a")
+    reply = await run_mention(
+        sender,
+        "@agent connect my github",
+        model=plan_only_model(credentials_action="add", credentials_tool="github"),
+        recall_fn=stub_recall,
+        private=False,
+        credentials_fn=credentials_fn,
+    )
+    assert reply == "Manage your tools in a private chat with me."
+    assert_fallback_event(reply)

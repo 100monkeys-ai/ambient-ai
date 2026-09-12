@@ -3,6 +3,7 @@
 plan -> recall (Cortex) -> execute (GitHub, sender's token) -> synthesize -> reply text.
 Every step emits one telemetry event. A failure in recall or execute becomes the honest
 short reply from ADR-009; the exception class goes to telemetry, never to the SMS.
+Every reply, fallback or synthesized, leaves on one orchestration.reply event.
 """
 
 from __future__ import annotations
@@ -68,6 +69,17 @@ def clip_sms(text: str) -> str:
     return cut + "…"
 
 
+def fallback(who: str, reply: str, **fields: object) -> str:
+    """Emit the reply event for an early return, then hand the text back to the caller.
+
+    Every early return goes out through here, on the same `orchestration.reply` event the
+    synthesis path emits, so the projector shows which honest sentence went to the sender
+    next to the step that failed. Without it the stream shows a failed step and no reply.
+    """
+    log.emit("orchestration.reply", sender=who, chars=len(reply), path="fallback", **fields)
+    return reply
+
+
 async def run_mention(
     sender: SenderProfile,
     body: str,
@@ -97,7 +109,7 @@ async def run_mention(
         plan: Plan = result.output
     except Exception as exc:
         log.emit("orchestration.plan", sender=who, status="failed", error=type(exc).__name__)
-        return LLM_UNAVAILABLE_REPLY
+        return fallback(who, LLM_UNAVAILABLE_REPLY)
     log.emit(
         "orchestration.plan",
         sender=who,
@@ -108,8 +120,7 @@ async def run_mention(
     )
     if plan.credentials_action != "none":
         if not private or credentials_fn is None:
-            log.emit("orchestration.reply", sender=who, path="credentials", status="refused")
-            return CREDENTIALS_PRIVATE_ONLY_REPLY
+            return fallback(who, CREDENTIALS_PRIVATE_ONLY_REPLY, status="refused")
         tool = plan.credentials_tool or "github"
         reply = clip_sms(await credentials_fn(plan.credentials_action, tool))
         log.emit("orchestration.reply", sender=who, chars=len(reply), path="credentials")
@@ -128,14 +139,14 @@ async def run_mention(
             log.emit(
                 "orchestration.recall", sender=who, status="failed", error=type(exc).__name__
             )
-            return MEMORY_UNAVAILABLE_REPLY
+            return fallback(who, MEMORY_UNAVAILABLE_REPLY)
         log.emit("orchestration.recall", sender=who, status="ok", facts=len(facts))
 
     findings: str | None = None
     if plan.needs_github:
         if not sender.github_token:
             log.emit("orchestration.execute", sender=who, status="skipped", reason="no token")
-            return GITHUB_NOT_CONNECTED_REPLY
+            return fallback(who, GITHUB_NOT_CONNECTED_REPLY)
         prompt = f"Task: {plan.github_task or body}\n"
         if facts:
             prompt += "Known facts about this person:\n" + "\n".join(f"- {f}" for f in facts)
@@ -147,7 +158,7 @@ async def run_mention(
             log.emit(
                 "orchestration.execute", sender=who, status="failed", error=type(exc).__name__
             )
-            return GITHUB_UNAVAILABLE_REPLY
+            return fallback(who, GITHUB_UNAVAILABLE_REPLY)
         log.emit("orchestration.execute", sender=who, status="ok", chars=len(findings))
 
     synthesis_prompt = f"Sender's message: {body}\n"
@@ -161,7 +172,7 @@ async def run_mention(
         log.emit(
             "orchestration.synthesize", sender=who, status="failed", error=type(exc).__name__
         )
-        return LLM_UNAVAILABLE_REPLY
+        return fallback(who, LLM_UNAVAILABLE_REPLY)
     log.emit("orchestration.synthesize", sender=who, status="ok", chars=len(reply))
     log.emit("orchestration.reply", sender=who, chars=len(reply), path="synthesis")
     return reply
