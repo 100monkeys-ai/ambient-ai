@@ -15,6 +15,9 @@ Every integration is optional, so a known sender is answered by the plan whether
 have connected anything. The connect link appears in exactly one place: the plan asked for
 GitHub and this sender has no token, which run_mention answers with GITHUB_NOT_CONNECTED_REPLY
 and this module turns into the link — delivered privately, because the link is one person's.
+In a group the room also gets a short line saying the request was heard and why nothing
+happened: the group is the only screen most people watching will ever see, so a silent group
+reads as a bot that ignored the question.
 
 Extraction is scheduled only for a reply a model wrote. A fallback from run_mention says
 GitHub, memory or the model was unreachable; a transcript ending in one holds no fact, so
@@ -47,6 +50,11 @@ CONNECT_TEXT = (
     "I need your permission to access GitHub to check that repo. "
     "Connect it — and anything else you want me to reach — here: {link}"
 )
+GROUP_NOT_CONNECTED_TEXT = (
+    "I can't check that yet: {whose} GitHub isn't connected. I've sent you the link privately."
+)
+"""The group's half of the not-connected answer. `whose` is possessive: the sender's own
+first name when the transport carries one, "your" when it does not — never their number."""
 
 
 def sms_reply(to: str) -> Reply:
@@ -65,16 +73,18 @@ def handle_mention(
     *,
     link_reply: Reply | None = None,
     private: bool = True,
+    first_name: str | None = None,
     forget_message: Forget | None = None,
     max_reply_chars: int = SMS_REPLY_MAX_CHARS,
 ) -> None:
     """`link_reply` carries the portal link when it must travel privately; defaults to `reply`.
 
     `private` is True when the conversation is one-to-one: SMS always is, a Telegram private
-    chat is, a Telegram group is not. `forget_message` deletes the sender's own message on
-    transports that can, and reports whether it worked, so a pasted token does not stay on
-    their screen. `max_reply_chars` is the transport's reply limit: SMS is billed in
-    160-character segments, Telegram is not, so each webhook passes its own.
+    chat is, a Telegram group is not. `first_name` is the sender's display name on transports
+    that carry one; it only ever addresses them in a group reply. `forget_message` deletes the
+    sender's own message on transports that can, and reports whether it worked, so a pasted
+    token does not stay on their screen. `max_reply_chars` is the transport's reply limit: SMS
+    is billed in 160-character segments, Telegram is not, so each webhook passes its own.
     """
     deliver_link = link_reply or reply
     forget = account.parse_intent(body)
@@ -120,6 +130,9 @@ def handle_mention(
     )
     if answer == GITHUB_NOT_CONNECTED_REPLY:
         log.emit("identity.connect", sender=redact(sender), verified=profile.verified)
+        if not private:
+            whose = f"{first_name.strip()}'s" if first_name and first_name.strip() else "your"
+            reply(GROUP_NOT_CONNECTED_TEXT.format(whose=whose))
         deliver_link(CONNECT_TEXT.format(link=portal_link(sender)))
         return
     reply(answer)

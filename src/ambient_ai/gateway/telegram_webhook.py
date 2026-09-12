@@ -141,12 +141,18 @@ async def inbound_telegram(
         text,
         message.get("message_id"),
         message.get("chat", {}).get("type") == "private",
+        message.get("from", {}).get("first_name"),
     )
     return Response(status_code=200)
 
 
 def _run_handler(
-    user_id: int, chat_id: int, text: str, message_id: int | None, private: bool
+    user_id: int,
+    chat_id: int,
+    text: str,
+    message_id: int | None,
+    private: bool,
+    first_name: str | None = None,
 ) -> None:
     sender = resolve_telegram_sender(user_id)
     needs_number = is_provisional(sender)
@@ -180,6 +186,7 @@ def _run_handler(
             reply,
             link_reply=link_reply,
             private=private,
+            first_name=first_name,
             forget_message=forget_message,
             max_reply_chars=TELEGRAM_REPLY_MAX_CHARS,
         )

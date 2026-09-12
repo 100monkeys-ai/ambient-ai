@@ -298,16 +298,65 @@ def test_a_user_with_no_credentials_is_answered_normally_on_telegram(sends, monk
     assert "/portal/" not in sends[0][1]
 
 
-def test_a_github_question_without_a_token_gets_the_link_privately(sends, monkeypatch):
-    """The link is one person's, so a group question sends it to the private chat."""
-    upsert_sender(SENDER)
+@pytest.fixture
+def not_connected(monkeypatch):
+    """run_mention answers that this sender's GitHub is missing, whatever they asked."""
 
     async def fake_run_mention(profile, body, **_):
         return GITHUB_NOT_CONNECTED_REPLY
 
     monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", fake_run_mention)
+
+
+def test_a_group_github_question_without_a_token_is_answered_in_the_group(sends, not_connected):
+    """Only one screen is recorded in the demo, so the group must see why nothing happened.
+
+    Two messages: the group learns the request was heard and is blocked on a connection, and
+    the link itself — one person's — still travels privately.
+    """
+    upsert_sender(SENDER)
     post(TestClient(create_app()), update(f"@{BOT_USERNAME} latest commit on my backend repo"))
+    assert len(sends) == 2
+    group = [s for s in sends if s[0] == GROUP_ID]
+    private = [s for s in sends if s[0] == USER_ID]
+    assert len(group) == 1 and len(private) == 1
+    assert group[0] == (
+        GROUP_ID,
+        "I can't check that yet: Alice's GitHub isn't connected. "
+        "I've sent you the link privately.",
+        None,
+    )
+    assert "/portal/" not in group[0][1]
+    token = private[0][1].split("/portal/", 1)[1].split()[0]
+    assert verify(token) == SENDER
+
+
+def test_the_group_reply_says_your_when_the_update_carries_no_first_name(sends, not_connected):
+    upsert_sender(SENDER)
+    payload = update(f"@{BOT_USERNAME} latest commit on my backend repo")
+    payload["message"]["from"].pop("first_name")
+    post(TestClient(create_app()), payload)
+    group = [s for s in sends if s[0] == GROUP_ID]
+    assert len(group) == 1
+    assert group[0][1].startswith("I can't check that yet: your GitHub isn't connected.")
+
+
+def test_a_private_github_question_without_a_token_gets_only_the_link(sends, not_connected):
+    """In a one-to-one chat there is no second audience: one message, with the link."""
+    upsert_sender(SENDER)
+    post(TestClient(create_app()), update("latest commit on my backend repo", chat_type="private"))
     assert len(sends) == 1
     chat_id, text, _ = sends[0]
     assert chat_id == USER_ID
     assert "/portal/" in text
+    assert "can't check that yet" not in text
+
+
+def test_no_event_carries_the_senders_name_or_number_when_github_is_not_connected(
+    sends, not_connected
+):
+    upsert_sender(SENDER)
+    post(TestClient(create_app()), update(f"@{BOT_USERNAME} latest commit on my backend repo"))
+    captured = "\n".join(f"{e.kind} {e.fields}" for e in log.events)
+    assert str(USER_ID) not in captured
+    assert "Alice" not in captured
