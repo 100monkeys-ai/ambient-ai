@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Form, Response
 
-from ambient_ai.gateway.handlers import handle_mention
+from ambient_ai.gateway.handlers import handle_mention, sms_reply
 from ambient_ai.settings import MENTION
 from ambient_ai.telemetry import log, redact
 
@@ -28,15 +28,20 @@ async def inbound_sms(
     to: Annotated[str, Form(alias="To")] = "",
 ) -> Response:
     if MENTION not in body:
-        log.emit("webhook.ignored", sender=redact(sender), to=redact(to), reason="no mention")
+        log.emit(
+            "webhook.ignored", transport="sms",
+            sender=redact(sender), to=redact(to), reason="no mention"
+        )
         return _empty_ok()
-    log.emit("webhook.mention", sender=redact(sender), to=redact(to), chars=len(body))
+    log.emit(
+        "webhook.mention", transport="sms", sender=redact(sender), to=redact(to), chars=len(body)
+    )
     background.add_task(_run_handler, sender, body)
     return _empty_ok()
 
 
 def _run_handler(sender: str, body: str) -> None:
     try:
-        handle_mention(sender, body)
+        handle_mention(sender, body, sms_reply(sender))
     except Exception as exc:  # noqa: BLE001 - the task must never raise into the server
         log.emit("handler.failed", sender=redact(sender), error=type(exc).__name__)

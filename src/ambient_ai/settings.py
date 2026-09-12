@@ -1,6 +1,7 @@
 """Process configuration. Reads names from the environment; never logs values."""
 
 import os
+import secrets
 
 from dotenv import load_dotenv
 
@@ -36,6 +37,9 @@ ENV_NAMES = (
     "TELEMETRY_STREAM",
     "TELEMETRY_LOG_FILE",
     "FAKE_SMS_OUTBOX",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_WEBHOOK_SECRET",
+    "FAKE_TELEGRAM_OUTBOX",
 )
 
 
@@ -60,3 +64,11 @@ def db_path() -> str:
 def portal_base_url() -> str:
     """Where magic links point. The public tunnel host in a demo; localhost otherwise."""
     return (env("PORTAL_BASE_URL") or "http://localhost:8000").rstrip("/")
+
+
+_generated_webhook_secret = secrets.token_urlsafe(32)
+
+
+def telegram_webhook_secret() -> str:
+    """TELEGRAM_WEBHOOK_SECRET, or one generated per process; setWebhook registers it at startup."""
+    return env("TELEGRAM_WEBHOOK_SECRET") or _generated_webhook_secret
