@@ -11,7 +11,10 @@ from ambient_ai.gateway.telegram_webhook import set_bot_identity
 from ambient_ai.identity import lookup_sender, set_token, upsert_sender
 from ambient_ai.identity.magic_link import verify
 from ambient_ai.identity.senders import adopt_telegram_contact
-from ambient_ai.orchestration.run import GITHUB_UNAVAILABLE_REPLY
+from ambient_ai.orchestration.run import (
+    GITHUB_NOT_CONNECTED_REPLY,
+    GITHUB_UNAVAILABLE_REPLY,
+)
 from ambient_ai.telemetry import log
 
 USER_ID = 123456789
@@ -273,3 +276,38 @@ def test_telegram_gets_a_longer_reply_limit_than_sms(sends, monkeypatch):
     )
     post(TestClient(create_app()), update(f"@{BOT_USERNAME} summarize ambient-ai"))
     assert limits == [1500]
+
+
+def test_a_user_with_no_credentials_is_answered_normally_on_telegram(sends, monkeypatch):
+    """Keys are optional on every transport: no connect link for a question needing none."""
+    upsert_sender(SENDER)
+    seen: list[tuple[str, str | None, str]] = []
+
+    async def fake_run_mention(profile, body, **_):
+        seen.append((profile.phone, profile.github_token, body))
+        return REPLY
+
+    monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", fake_run_mention)
+    monkeypatch.setattr(
+        "ambient_ai.gateway.handlers.schedule_extraction", lambda profile, transcript: None
+    )
+    body = f"@{BOT_USERNAME} what do you remember about me?"
+    post(TestClient(create_app()), update(body))
+    assert seen == [(SENDER, None, body)]
+    assert sends[0] == (GROUP_ID, REPLY, None)
+    assert "/portal/" not in sends[0][1]
+
+
+def test_a_github_question_without_a_token_gets_the_link_privately(sends, monkeypatch):
+    """The link is one person's, so a group question sends it to the private chat."""
+    upsert_sender(SENDER)
+
+    async def fake_run_mention(profile, body, **_):
+        return GITHUB_NOT_CONNECTED_REPLY
+
+    monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", fake_run_mention)
+    post(TestClient(create_app()), update(f"@{BOT_USERNAME} latest commit on my backend repo"))
+    assert len(sends) == 1
+    chat_id, text, _ = sends[0]
+    assert chat_id == USER_ID
+    assert "/portal/" in text

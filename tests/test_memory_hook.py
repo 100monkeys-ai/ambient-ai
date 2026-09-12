@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from ambient_ai.gateway import create_app
 from ambient_ai.identity import set_token, upsert_sender
-from ambient_ai.orchestration.run import FALLBACK_REPLIES
+from ambient_ai.orchestration.run import FALLBACK_REPLIES, GITHUB_NOT_CONNECTED_REPLY
 from ambient_ai.telemetry import log
 
 PHONE = "+15551234567"
@@ -64,9 +64,14 @@ def test_onboarding_and_connect_branches_do_not_schedule_extraction(outbox, monk
         "ambient_ai.gateway.handlers.schedule_extraction",
         lambda profile, transcript: called.append(profile.phone),
     )
+
+    async def needs_github(profile, body, **_):
+        return GITHUB_NOT_CONNECTED_REPLY
+
+    monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", needs_github)
     client = TestClient(create_app())
     post_sms(client, "@agent hello")  # unknown sender: magic link
-    post_sms(client, "@agent hello")  # known, no token: connect link
+    post_sms(client, "@agent check my repo")  # known, no token, plan needs GitHub: connect link
     assert len(outbox) == 2 and called == []
 
 
@@ -108,9 +113,15 @@ def test_a_raising_extractor_never_changes_the_reply_or_the_response(outbox, mon
     assert "5551234567" not in "\n".join(f"{e.kind} {e.fields}" for e in log.events)
 
 
-@pytest.mark.parametrize("fallback", sorted(FALLBACK_REPLIES))
+@pytest.mark.parametrize(
+    "fallback", sorted(FALLBACK_REPLIES - {GITHUB_NOT_CONNECTED_REPLY})
+)
 def test_a_fallback_reply_schedules_no_extraction(outbox, monkeypatch, fallback):
-    """A constant reply carries nothing the sender said; extracting it writes fiction."""
+    """A constant reply carries nothing the sender said; extracting it writes fiction.
+
+    GITHUB_NOT_CONNECTED_REPLY is excluded because the gateway sends the connect link in its
+    place; that it schedules no extraction either is asserted just above.
+    """
     known_sender_with_token()
     called: list[str] = []
 

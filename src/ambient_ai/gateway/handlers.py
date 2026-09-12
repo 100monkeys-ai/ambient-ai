@@ -9,6 +9,11 @@ Credential management is settled here, before anything else, because it is the o
 that must never reach a model: `private` says whether the conversation is one-to-one, and a
 credential intent in a group is refused with nothing stored, logged, or extracted.
 
+Every integration is optional, so a known sender is answered by the plan whether or not they
+have connected anything. The connect link appears in exactly one place: the plan asked for
+GitHub and this sender has no token, which run_mention answers with GITHUB_NOT_CONNECTED_REPLY
+and this module turns into the link — delivered privately, because the link is one person's.
+
 Extraction is scheduled only for a reply a model wrote. A fallback from run_mention says
 GitHub, memory or the model was unreachable; a transcript ending in one holds no fact, so
 `is_fallback_reply` keeps it out of memory rather than letting the extractor invent one.
@@ -23,7 +28,11 @@ from ambient_ai.gateway.sms import send_sms
 from ambient_ai.identity import lookup_sender, upsert_sender
 from ambient_ai.identity.magic_link import portal_link
 from ambient_ai.memory import schedule_extraction, transcript_of
-from ambient_ai.orchestration.run import is_fallback_reply, run_mention
+from ambient_ai.orchestration.run import (
+    GITHUB_NOT_CONNECTED_REPLY,
+    is_fallback_reply,
+    run_mention,
+)
 from ambient_ai.settings import SMS_REPLY_MAX_CHARS
 from ambient_ai.telemetry import log, redact
 from ambient_ai.tools import credentials
@@ -78,11 +87,6 @@ def handle_mention(
         log.emit("identity.onboarding", sender=redact(sender))
         deliver_link(ONBOARD_TEXT.format(link=portal_link(sender)))
         return
-    if profile.github_token is None:
-        log.emit("identity.connect", sender=redact(sender), verified=profile.verified)
-        deliver_link(CONNECT_TEXT.format(link=portal_link(sender)))
-        return
-
     managed = False
 
     async def credentials_fn(action: str, tool: str) -> str:
@@ -100,6 +104,10 @@ def handle_mention(
             max_reply_chars=max_reply_chars,
         )
     )
+    if answer == GITHUB_NOT_CONNECTED_REPLY:
+        log.emit("identity.connect", sender=redact(sender), verified=profile.verified)
+        deliver_link(CONNECT_TEXT.format(link=portal_link(sender)))
+        return
     reply(answer)
     if not managed and not is_fallback_reply(answer):
         schedule_extraction(profile, transcript_of(safe_body, answer))

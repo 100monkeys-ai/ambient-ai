@@ -1,8 +1,11 @@
+from datetime import UTC, datetime
+
 from fastapi.testclient import TestClient
 
 from ambient_ai.gateway import create_app
 from ambient_ai.identity import lookup_sender, set_token, upsert_sender
 from ambient_ai.identity.magic_link import verify
+from ambient_ai.orchestration.run import GITHUB_NOT_CONNECTED_REPLY
 from ambient_ai.telemetry import log
 
 PHONE = "+15551234567"
@@ -43,10 +46,36 @@ def test_unknown_sender_with_mention_is_texted_a_magic_link(outbox):
     assert lookup_sender(PHONE) is not None
 
 
-def test_known_unverified_sender_is_texted_a_connect_link(outbox):
-    upsert_sender(PHONE)
+def test_a_sender_with_no_credentials_is_answered_normally(outbox, monkeypatch):
+    """Every integration is optional, so a question that needs none is answered with none."""
+    upsert_sender(PHONE, verified_at=datetime.now(UTC))
+    seen: list[tuple[str, str | None, str]] = []
+
+    async def fake_run_mention(profile, body, **_):
+        seen.append((profile.phone, profile.github_token, body))
+        return REPLY
+
+    monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", fake_run_mention)
+    monkeypatch.setattr(
+        "ambient_ai.gateway.handlers.schedule_extraction", lambda profile, transcript: None
+    )
     client = TestClient(create_app())
-    post_sms(client, "@agent check my repo")
+    post_sms(client, "@agent what do you remember about me?")
+    assert seen == [(PHONE, None, "@agent what do you remember about me?")]
+    assert outbox == [(PHONE, REPLY)]
+    assert "/portal/" not in outbox[0][1]
+
+
+def test_the_connect_link_arrives_only_when_the_plan_needs_github(outbox, monkeypatch):
+    """The not-connected reply is the one place a known sender is asked to connect anything."""
+    upsert_sender(PHONE, verified_at=datetime.now(UTC))
+
+    async def fake_run_mention(profile, body, **_):
+        return GITHUB_NOT_CONNECTED_REPLY
+
+    monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", fake_run_mention)
+    client = TestClient(create_app())
+    post_sms(client, "@agent check the latest commit on my backend repo")
     assert len(outbox) == 1
     to, body = outbox[0]
     assert to == PHONE
