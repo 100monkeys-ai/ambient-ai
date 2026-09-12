@@ -226,3 +226,50 @@ def test_memory_path_is_hashed_not_the_number(phone):
     assert path.startswith("senders/")
     assert "5551230" not in path
     assert len(path) == len("senders/") + 16
+
+
+# --- the Cortex MCP tool names, as the live server spells them -----------------------------
+
+
+def test_cortex_tool_names_are_the_servers_dotted_spelling():
+    """The ai-tinkerers MCP server names its tools with dots; `direct_call_tool` needs that
+    exact string. Measured live on 2026-09-12 at 20:04 UTC: 94 tools, all dotted."""
+    from ambient_ai.orchestration import context_agent as ca
+
+    assert ca.PAGE_READ_TOOL == "pages.read"
+    assert ca.PAGE_CREATE_TOOL == "pages.create"
+    assert ca.PAGE_APPEND_TOOL == "pages.append_to_section"
+
+
+async def test_read_memory_page_calls_pages_read_by_its_dotted_name():
+    from ambient_ai.orchestration.context_agent import PAGE_READ_TOOL, read_memory_page
+
+    from .fake_cortex import FakeCortex
+
+    cortex = FakeCortex({"senders/abc": "# Memory\n\n- 2026-09-12: a fact\n"})
+    body = await read_memory_page("senders/abc", toolset_factory=cortex.open)
+    assert cortex.calls[0][0] == PAGE_READ_TOOL == "pages.read"
+    assert "a fact" in body
+
+
+async def test_recall_reads_the_senders_page_and_strips_the_bullets(monkeypatch):
+    monkeypatch.setenv("CORTEX_MCP_URL", "http://cortex.test/mcp")
+    monkeypatch.setenv("CORTEX_WORKSPACE", "ws-test")
+    from ambient_ai.orchestration.context_agent import memory_path, recall
+
+    from .fake_cortex import FakeCortex
+
+    sender = SenderProfile(phone="+15551230001")
+    cortex = FakeCortex({memory_path(sender.phone): "# Memory\n\n- 2026-09-12: a fact\n"})
+    assert await recall(sender, toolset_factory=cortex.open) == ["2026-09-12: a fact"]
+    assert cortex.calls[0][1]["workspace"] == "ws-test"
+
+
+async def test_read_memory_page_raises_when_the_server_has_no_pages_read_tool():
+    from ambient_ai.orchestration.context_agent import read_memory_page
+
+    from .fake_cortex import FakeCortex
+
+    cortex = FakeCortex(tool_names=("pages_read", "pages_create"))
+    with pytest.raises(RuntimeError, match="pages.read"):
+        await read_memory_page("senders/abc", toolset_factory=cortex.open)

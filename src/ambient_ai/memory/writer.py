@@ -8,41 +8,28 @@ and appended to after that, one dated bullet line per fact. Nothing is written w
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Callable
-from contextlib import AbstractAsyncContextManager
 from datetime import UTC, date, datetime
 from typing import Any
 
 from ambient_ai.identity.senders import SenderProfile
 from ambient_ai.memory.extractor import MemoryExtraction
-from ambient_ai.orchestration.context_agent import NOT_FOUND_MARKERS, memory_path
-from ambient_ai.settings import OUTBOUND_TIMEOUT_SECONDS, env
+from ambient_ai.orchestration.context_agent import (
+    NOT_FOUND_MARKERS,
+    PAGE_APPEND_TOOL,
+    PAGE_CREATE_TOOL,
+    PAGE_READ_TOOL,
+    ToolsetFactory,
+    call_cortex,
+    cortex_scope,
+    cortex_toolset,
+    memory_path,
+    require_tool,
+)
+from ambient_ai.settings import env
 from ambient_ai.telemetry import log, redact
-
-ToolsetFactory = Callable[[], AbstractAsyncContextManager[Any]]
 
 PAGE_TITLE = "Sender memory"
 PAGE_HEADING = "Memory"
-READ_TOOLS = ("pages_read", "pages.read")
-CREATE_TOOLS = ("pages_create", "pages.create")
-APPEND_TOOLS = ("pages_append_to_section", "pages.append_to_section")
-
-
-def cortex_toolset() -> AbstractAsyncContextManager[Any]:
-    """The MCPToolset the Context Agent uses, built the same way, with the same timeouts."""
-    from pydantic_ai.mcp import MCPToolset
-
-    url = env("CORTEX_MCP_URL")
-    token = env("CORTEX_MCP_TOKEN")
-    assert url is not None
-    return MCPToolset(
-        url,
-        headers={"Authorization": f"Bearer {token}"} if token else None,
-        init_timeout=OUTBOUND_TIMEOUT_SECONDS,
-        read_timeout=OUTBOUND_TIMEOUT_SECONDS,
-        tool_error_behavior="error",
-    )
 
 
 def memory_lines(extraction: MemoryExtraction, today: date) -> list[str]:
@@ -53,18 +40,6 @@ def memory_lines(extraction: MemoryExtraction, today: date) -> list[str]:
         f"- {stamp}: prefers {pref.strip()}" for pref in extraction.preferences if pref.strip()
     ]
     return lines
-
-
-def _pick(available: set[str], candidates: tuple[str, ...], what: str) -> str:
-    name = next((n for n in candidates if n in available), None)
-    if name is None:
-        raise RuntimeError(f"Cortex MCP server exposes no {what} tool")
-    return name
-
-
-async def _call(toolset: Any, name: str, args: dict[str, Any]) -> Any:
-    async with asyncio.timeout(OUTBOUND_TIMEOUT_SECONDS):
-        return await toolset.direct_call_tool(name, args)
 
 
 async def remember(
@@ -89,34 +64,31 @@ async def remember(
         return False
 
     path = memory_path(sender.phone)
-    scope: dict[str, Any] = {}
-    workspace = env("CORTEX_WORKSPACE")
-    if workspace:
-        scope["workspace"] = workspace
+    scope: dict[str, Any] = cortex_scope()
     content = "\n".join(lines)
 
     async with (toolset_factory or cortex_toolset)() as toolset:
         available = {t.name for t in await toolset.list_tools()}
-        read_tool = _pick(available, READ_TOOLS, "pages read")
+        require_tool(available, PAGE_READ_TOOL)
         exists = True
         try:
-            await _call(toolset, read_tool, {"pathOrId": path, **scope})
+            await call_cortex(toolset, PAGE_READ_TOOL, {"pathOrId": path, **scope})
         except Exception as exc:
             if not any(marker in str(exc).lower() for marker in NOT_FOUND_MARKERS):
                 raise
             exists = False
         if exists:
-            append_tool = _pick(available, APPEND_TOOLS, "pages append")
-            await _call(
+            require_tool(available, PAGE_APPEND_TOOL)
+            await call_cortex(
                 toolset,
-                append_tool,
+                PAGE_APPEND_TOOL,
                 {"pathOrId": path, "heading_text": PAGE_HEADING, "content": content, **scope},
             )
         else:
-            create_tool = _pick(available, CREATE_TOOLS, "pages create")
-            await _call(
+            require_tool(available, PAGE_CREATE_TOOL)
+            await call_cortex(
                 toolset,
-                create_tool,
+                PAGE_CREATE_TOOL,
                 {
                     "path": path,
                     "title": PAGE_TITLE,

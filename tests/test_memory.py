@@ -68,51 +68,22 @@ def test_extractor_agent_has_no_tools_and_the_three_field_schema():
 # --- writer -------------------------------------------------------------------------------
 
 import re  # noqa: E402
-from contextlib import asynccontextmanager  # noqa: E402
 from datetime import date  # noqa: E402
-from typing import Any  # noqa: E402
 
 from ambient_ai.identity.senders import SenderProfile  # noqa: E402
 from ambient_ai.memory.writer import remember  # noqa: E402
-from ambient_ai.orchestration.context_agent import memory_path  # noqa: E402
+from ambient_ai.orchestration.context_agent import (  # noqa: E402
+    PAGE_APPEND_TOOL,
+    PAGE_CREATE_TOOL,
+    PAGE_READ_TOOL,
+    memory_path,
+)
 from ambient_ai.telemetry import log  # noqa: E402
+
+from .fake_cortex import FakeCortex  # noqa: E402
 
 PHONE = "+15551234567"
 DATED = re.compile(r"^- \d{4}-\d{2}-\d{2}: .+$")
-
-
-class FakeCortex:
-    """Stands in for MCPToolset: the same list_tools/direct_call_tool surface, in memory."""
-
-    def __init__(self, pages: dict[str, str] | None = None) -> None:
-        self.pages: dict[str, str] = dict(pages or {})
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-
-    async def list_tools(self):
-        class T:
-            def __init__(self, name):
-                self.name = name
-
-        return [T(n) for n in ("pages_read", "pages_create", "pages_append_to_section")]
-
-    async def direct_call_tool(self, name: str, args: dict[str, Any]) -> Any:
-        self.calls.append((name, dict(args)))
-        path = args["pathOrId"] if "pathOrId" in args else args["path"]
-        if name == "pages_read":
-            if path not in self.pages:
-                raise RuntimeError(f"not_found: {path}")
-            return {"body_md": self.pages[path]}
-        if name == "pages_create":
-            self.pages[path] = args["body_md"]
-            return {"path": path}
-        if name == "pages_append_to_section":
-            self.pages[path] = self.pages[path].rstrip("\n") + "\n" + args["content"] + "\n"
-            return {"path": path}
-        raise AssertionError(name)
-
-    @asynccontextmanager
-    async def open(self):
-        yield self
 
 
 def two_facts() -> MemoryExtraction:
@@ -132,7 +103,7 @@ async def test_remember_creates_the_page_with_one_dated_line_per_fact(monkeypatc
     )
     assert written is True
     path = memory_path(PHONE)
-    assert [c[0] for c in cortex.calls] == ["pages_read", "pages_create"]
+    assert [c[0] for c in cortex.calls] == [PAGE_READ_TOOL, PAGE_CREATE_TOOL]
     assert cortex.calls[1][1]["workspace"] == "ws-test"
     body = cortex.pages[path]
     lines = [ln for ln in body.splitlines() if ln.startswith("- ")]
@@ -149,7 +120,7 @@ async def test_remember_appends_when_the_page_exists(monkeypatch):
     path = memory_path(PHONE)
     cortex = FakeCortex({path: "# Memory\n\n- 2026-09-11: likes short replies\n"})
     await remember(SenderProfile(phone=PHONE), two_facts(), toolset_factory=cortex.open)
-    assert [c[0] for c in cortex.calls] == ["pages_read", "pages_append_to_section"]
+    assert [c[0] for c in cortex.calls] == [PAGE_READ_TOOL, PAGE_APPEND_TOOL]
     lines = [ln for ln in cortex.pages[path].splitlines() if ln.startswith("- ")]
     assert len(lines) == 3 and all(DATED.match(ln) for ln in lines)
     assert lines[0] == "- 2026-09-11: likes short replies"
