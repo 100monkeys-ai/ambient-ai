@@ -72,3 +72,16 @@ def test_posting_a_token_github_rejects_stores_nothing_and_says_so(monkeypatch):
     assert lookup_sender(PHONE).github_token is None
     captured = "\n".join(f"{e.kind} {e.fields}" for e in log.events)
     assert "ghp_" not in captured
+
+
+def test_verified_page_notes_more_connections_are_coming_and_the_404_does_not():
+    """The page says what is next, so an absent card reads as unbuilt rather than broken."""
+    upsert_sender(PHONE)
+    client = TestClient(create_app())
+    token = sign(PHONE)
+    page = client.get(f"/portal/{token}").text
+    assert "More connections are on the way" in page
+    assert "chat connectors" in page
+    rejected = client.get(f"/portal/{token[:-2]}zz")
+    assert rejected.status_code == 404
+    assert "More connections are on the way" not in rejected.text

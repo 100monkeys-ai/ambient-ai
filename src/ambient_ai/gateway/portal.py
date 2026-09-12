@@ -71,6 +71,10 @@ CARD = """<div class="card"><h2>{name}</h2>
 DISCONNECT = """<form method="post" action="{action}">
 <button type="submit" name="action" value="disconnect">Disconnect</button></form>"""
 
+MORE = """<p class="lede">More connections are on the way: additional MCP tools and chat \
+connectors (Slack, Discord, Signal, Teams, email) will appear here as optional cards. Nothing \
+you connect is required; the agent works without any of them.</p>"""
+
 FOOTER = "<p>Go back to your thread and mention <code>@agent</code> again.</p>"
 
 
@@ -118,7 +122,7 @@ def _page(phone: str, token: str, notices: dict[str, str] | None = None) -> str:
         for integration in registry.integrations()
     )
     header = HEADER.format(last4=escape(redact(phone)[-4:]))
-    return PAGE.format(content=header + cards + FOOTER)
+    return PAGE.format(content=header + cards + MORE + FOOTER)
 
 
 @router.get("/portal/{token}", response_class=HTMLResponse)
