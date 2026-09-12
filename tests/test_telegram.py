@@ -11,6 +11,7 @@ from ambient_ai.gateway.telegram_webhook import set_bot_identity
 from ambient_ai.identity import lookup_sender, set_token, upsert_sender
 from ambient_ai.identity.magic_link import verify
 from ambient_ai.identity.senders import adopt_telegram_contact
+from ambient_ai.orchestration.run import GITHUB_UNAVAILABLE_REPLY
 from ambient_ai.telemetry import log
 
 USER_ID = 123456789
@@ -234,3 +235,22 @@ def test_no_event_carries_the_full_phone_number(sends):
     captured = "\n".join(f"{e.kind} {e.fields}" for e in log.events)
     assert PHONE not in captured and PHONE.lstrip("+") not in captured
     assert "***4567" in captured
+
+
+def test_a_fallback_reply_schedules_no_extraction(sends, monkeypatch):
+    """Telegram shares the hook, so the guard must hold on this transport too."""
+    upsert_sender(SENDER)
+    set_token(SENDER, "ghp_testtoken")
+    scheduled: list[str] = []
+
+    async def fake_run_mention(profile, body, **_):
+        return GITHUB_UNAVAILABLE_REPLY
+
+    monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", fake_run_mention)
+    monkeypatch.setattr(
+        "ambient_ai.gateway.handlers.schedule_extraction",
+        lambda profile, transcript: scheduled.append(transcript),
+    )
+    post(TestClient(create_app()), update(f"@{BOT_USERNAME} what is my latest commit?"))
+    assert sends[0] == (GROUP_ID, GITHUB_UNAVAILABLE_REPLY, None)
+    assert scheduled == []

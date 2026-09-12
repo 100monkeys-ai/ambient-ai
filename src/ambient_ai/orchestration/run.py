@@ -69,6 +69,27 @@ def clip_sms(text: str) -> str:
     return cut + "…"
 
 
+FALLBACK_REPLIES = frozenset(
+    {
+        GITHUB_UNAVAILABLE_REPLY,
+        MEMORY_UNAVAILABLE_REPLY,
+        LLM_UNAVAILABLE_REPLY,
+        GITHUB_NOT_CONNECTED_REPLY,
+        CREDENTIALS_PRIVATE_ONLY_REPLY,
+    }
+)
+"""Every reply this module returns without a model writing it."""
+
+
+def is_fallback_reply(text: str) -> bool:
+    """True when the reply is one of this module's constants, not an answer to the sender.
+
+    A fallback says only that something was unreachable, so a transcript ending in one holds
+    no fact worth remembering; extracting from it invents one.
+    """
+    return text in FALLBACK_REPLIES
+
+
 def fallback(who: str, reply: str, **fields: object) -> str:
     """Emit the reply event for an early return, then hand the text back to the caller.
 

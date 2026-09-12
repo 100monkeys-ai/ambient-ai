@@ -8,6 +8,10 @@ past this line knows which transport the message came from.
 Credential management is settled here, before anything else, because it is the one branch
 that must never reach a model: `private` says whether the conversation is one-to-one, and a
 credential intent in a group is refused with nothing stored, logged, or extracted.
+
+Extraction is scheduled only for a reply a model wrote. A fallback from run_mention says
+GitHub, memory or the model was unreachable; a transcript ending in one holds no fact, so
+`is_fallback_reply` keeps it out of memory rather than letting the extractor invent one.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ from ambient_ai.gateway.sms import send_sms
 from ambient_ai.identity import lookup_sender, upsert_sender
 from ambient_ai.identity.magic_link import portal_link
 from ambient_ai.memory import schedule_extraction, transcript_of
-from ambient_ai.orchestration.run import run_mention
+from ambient_ai.orchestration.run import is_fallback_reply, run_mention
 from ambient_ai.telemetry import log, redact
 from ambient_ai.tools import credentials
 
@@ -88,7 +92,7 @@ def handle_mention(
         run_mention(profile, safe_body, private=private, credentials_fn=credentials_fn)
     )
     reply(answer)
-    if not managed:
+    if not managed and not is_fallback_reply(answer):
         schedule_extraction(profile, transcript_of(safe_body, answer))
 
 

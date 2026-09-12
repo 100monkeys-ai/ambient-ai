@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import threading
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ambient_ai.gateway import create_app
 from ambient_ai.identity import set_token, upsert_sender
+from ambient_ai.orchestration.run import FALLBACK_REPLIES
 from ambient_ai.telemetry import log
 
 PHONE = "+15551234567"
@@ -104,3 +106,23 @@ def test_a_raising_extractor_never_changes_the_reply_or_the_response(outbox, mon
     assert failed and failed[0].fields["error"] == "RuntimeError"
     assert not any(e.kind == "handler.failed" for e in log.events)
     assert "5551234567" not in "\n".join(f"{e.kind} {e.fields}" for e in log.events)
+
+
+@pytest.mark.parametrize("fallback", sorted(FALLBACK_REPLIES))
+def test_a_fallback_reply_schedules_no_extraction(outbox, monkeypatch, fallback):
+    """A constant reply carries nothing the sender said; extracting it writes fiction."""
+    known_sender_with_token()
+    called: list[str] = []
+
+    async def fake_run_mention(profile, body, **_):
+        return fallback
+
+    monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", fake_run_mention)
+    monkeypatch.setattr(
+        "ambient_ai.gateway.handlers.schedule_extraction",
+        lambda profile, transcript: called.append(profile.phone),
+    )
+    response = post_sms(TestClient(create_app()), BODY)
+    assert response.status_code == 200
+    assert outbox == [(PHONE, fallback)], "the fallback still reaches the sender"
+    assert called == []
