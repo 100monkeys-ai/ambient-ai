@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
@@ -26,6 +28,17 @@ class Plan(BaseModel):
         description="The full SMS reply when no memory and no tool is needed (greetings, "
         "questions about the agent itself). Null otherwise.",
     )
+    credentials_action: Literal["list", "add", "remove", "none"] = Field(
+        default="none",
+        description="What the sender wants done with their own tool credentials: 'list' to "
+        "see what is connected, 'add' to connect or replace one, 'remove' to disconnect one. "
+        "'none' for every other message.",
+    )
+    credentials_tool: str | None = Field(
+        default=None,
+        description="Which tool the credential action is about, lowercase, e.g. 'github'. "
+        "Null when credentials_action is 'none'.",
+    )
 
 
 ORCHESTRATOR_INSTRUCTIONS = """\
@@ -45,6 +58,11 @@ Rules:
   fixed or merged, set needs_github to true and write github_task as one line for a GitHub
   reader (for example "latest commit on the backend repo; say whether it fixes the auth bug").
 - When needs_memory or needs_github is true, leave direct_reply null.
+- If the message is about the sender's own connected tools or credentials — what is
+  connected, connecting or replacing a token, disconnecting one — set credentials_action to
+  list, add, or remove and credentials_tool to the tool name, and leave needs_memory,
+  needs_github and direct_reply alone. You will never be shown a token and must never ask
+  for one in direct_reply; the gateway handles the secret itself.
 """
 
 

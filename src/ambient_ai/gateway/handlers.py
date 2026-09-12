@@ -4,6 +4,10 @@ handle_mention(sender, body, reply) is the one seam: a connected sender's messag
 through run_mention and the reply text goes out through `reply`, a callback the transport
 adapter built (SMS closes over send_sms; Telegram over sendMessage to the chat). Nothing
 past this line knows which transport the message came from.
+
+Credential management is settled here, before anything else, because it is the one branch
+that must never reach a model: `private` says whether the conversation is one-to-one, and a
+credential intent in a group is refused with nothing stored, logged, or extracted.
 """
 
 from __future__ import annotations
@@ -17,8 +21,10 @@ from ambient_ai.identity.magic_link import portal_link
 from ambient_ai.memory import schedule_extraction, transcript_of
 from ambient_ai.orchestration.run import run_mention
 from ambient_ai.telemetry import log, redact
+from ambient_ai.tools import credentials
 
 Reply = Callable[[str], None]
+Forget = Callable[[], bool]
 
 ONBOARD_TEXT = "I don't have a workspace for you yet! Tap here to authenticate: {link}"
 CONNECT_TEXT = (
@@ -37,10 +43,28 @@ def sms_reply(to: str) -> Reply:
 
 
 def handle_mention(
-    sender: str, body: str, reply: Reply, *, link_reply: Reply | None = None
+    sender: str,
+    body: str,
+    reply: Reply,
+    *,
+    link_reply: Reply | None = None,
+    private: bool = True,
+    forget_message: Forget | None = None,
 ) -> None:
-    """`link_reply` carries the portal link when it must travel privately; defaults to `reply`."""
+    """`link_reply` carries the portal link when it must travel privately; defaults to `reply`.
+
+    `private` is True when the conversation is one-to-one: SMS always is, a Telegram private
+    chat is, a Telegram group is not. `forget_message` deletes the sender's own message on
+    transports that can, and reports whether it worked, so a pasted token does not stay on
+    their screen.
+    """
     deliver_link = link_reply or reply
+    intent = credentials.parse_intent(body)
+    if intent.action != "none":
+        _handle_credentials(sender, intent, reply, private=private, forget_message=forget_message)
+        return
+
+    safe_body = credentials.scrub(body)
     profile = lookup_sender(sender)
     if profile is None:
         upsert_sender(sender)
@@ -51,6 +75,55 @@ def handle_mention(
         log.emit("identity.connect", sender=redact(sender), verified=profile.verified)
         deliver_link(CONNECT_TEXT.format(link=portal_link(sender)))
         return
-    answer = asyncio.run(run_mention(profile, body))
+
+    managed = False
+
+    async def credentials_fn(action: str, tool: str) -> str:
+        """The plan routed a credential action here; the store is the gateway's, not the model's."""
+        nonlocal managed
+        managed = True
+        return await _apply(sender, credentials.CredentialIntent(action=action, tool=tool))
+
+    answer = asyncio.run(
+        run_mention(profile, safe_body, private=private, credentials_fn=credentials_fn)
+    )
     reply(answer)
-    schedule_extraction(profile, transcript_of(body, answer))
+    if not managed:
+        schedule_extraction(profile, transcript_of(safe_body, answer))
+
+
+def _handle_credentials(
+    sender: str,
+    intent: credentials.CredentialIntent,
+    reply: Reply,
+    *,
+    private: bool,
+    forget_message: Forget | None,
+) -> None:
+    if not private:
+        log.emit(
+            "tools.managed",
+            sender=redact(sender),
+            action="refused",
+            tool=intent.tool,
+            reason="group chat",
+        )
+        reply(credentials.GROUP_REFUSAL)
+        return
+    upsert_sender(sender)
+    text = asyncio.run(_apply(sender, intent))
+    if intent.token is not None and forget_message is not None and not forget_message():
+        text += credentials.DELETE_FAILED_NOTE
+    reply(text)
+
+
+async def _apply(sender: str, intent: credentials.CredentialIntent) -> str:
+    text, outcome = await credentials.handle(sender, intent)
+    log.emit(
+        "tools.managed",
+        sender=redact(sender),
+        action=intent.action,
+        tool=intent.tool,
+        outcome=outcome,
+    )
+    return text

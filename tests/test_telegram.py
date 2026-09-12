@@ -120,7 +120,7 @@ def test_a_sender_with_a_number_is_never_asked_for_it_again(sends, monkeypatch):
     adopt_telegram_contact(USER_ID, PHONE)
     set_token(PHONE, "ghp_testtoken")
 
-    async def fake_run_mention(profile, body):
+    async def fake_run_mention(profile, body, **_):
         return REPLY
 
     monkeypatch.setattr("ambient_ai.gateway.handlers.run_mention", fake_run_mention)
@@ -174,7 +174,7 @@ def test_a_mapped_user_mention_resolves_to_the_phone_record_and_its_token(sends,
     set_token(PHONE, "ghp_phonetoken")
     seen: list[tuple[str, str | None, str]] = []
 
-    async def fake_run_mention(profile, body):
+    async def fake_run_mention(profile, body, **_):
         seen.append((profile.phone, profile.github_token, body))
         return REPLY
 
@@ -194,7 +194,7 @@ def test_known_user_with_token_gets_the_reply_in_the_group(sends, monkeypatch):
     seen: list[tuple[str, str | None, str]] = []
     scheduled: list[str] = []
 
-    async def fake_run_mention(profile, body):
+    async def fake_run_mention(profile, body, **_):
         seen.append((profile.phone, profile.github_token, body))
         return REPLY
 

@@ -30,7 +30,7 @@ def test_extraction_is_scheduled_after_the_reply_with_the_full_transcript(outbox
     order: list[str] = []
     scheduled: list[tuple[str, str]] = []
 
-    async def fake_run_mention(profile, body):
+    async def fake_run_mention(profile, body, **_):
         return REPLY
 
     real_send = outbox
@@ -72,7 +72,7 @@ def test_a_raising_extractor_never_changes_the_reply_or_the_response(outbox, mon
     known_sender_with_token()
     threads: list[threading.Thread] = []
 
-    async def fake_run_mention(profile, body):
+    async def fake_run_mention(profile, body, **_):
         return REPLY
 
     async def exploding_extract(transcript, *, model=None):

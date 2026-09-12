@@ -59,7 +59,7 @@ def test_known_sender_with_token_gets_the_orchestrated_reply(outbox, monkeypatch
     set_token(PHONE, "ghp_testtoken")
     seen: list[tuple[str, str | None, str]] = []
 
-    async def fake_run_mention(profile, body):
+    async def fake_run_mention(profile, body, **_):
         seen.append((profile.phone, profile.github_token, body))
         return REPLY
 

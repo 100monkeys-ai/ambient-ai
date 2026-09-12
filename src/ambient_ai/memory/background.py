@@ -15,6 +15,7 @@ from ambient_ai.identity.senders import SenderProfile
 from ambient_ai.memory.extractor import extract
 from ambient_ai.memory.writer import ToolsetFactory, remember
 from ambient_ai.telemetry import log, redact
+from ambient_ai.tools.credentials import contains_token
 
 
 def transcript_of(inbound: str, reply: str) -> str:
@@ -30,6 +31,9 @@ async def extract_and_remember(
 ) -> bool:
     """Run the extractor, then the writer. Returns True when Cortex was written. Never raises."""
     who = redact(sender.phone)
+    if contains_token(transcript):
+        log.emit("memory.extract", sender=who, status="skipped", reason="credential material")
+        return False
     log.emit("memory.extract", sender=who, status="started", chars=len(transcript))
     try:
         extraction = await extract(transcript, model=model)

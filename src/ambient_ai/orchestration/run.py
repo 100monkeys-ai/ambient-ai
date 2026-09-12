@@ -20,9 +20,11 @@ from ambient_ai.orchestration.llm import SYNTHESIS_SETTINGS, llm_model
 from ambient_ai.orchestration.orchestrator import Plan, build_orchestrator
 from ambient_ai.settings import SMS_REPLY_MAX_CHARS
 from ambient_ai.telemetry import log, redact
+from ambient_ai.tools.credentials import scrub
 from ambient_ai.tools.github_rest import GitHubDeps, github_client
 
 RecallFn = Callable[[SenderProfile], Awaitable[list[str]]]
+CredentialsFn = Callable[[str, str], Awaitable[str]]
 
 GITHUB_UNAVAILABLE_REPLY = "I couldn't reach GitHub just now. Try again in a minute."
 MEMORY_UNAVAILABLE_REPLY = "I couldn't reach my memory just now. Try again in a minute."
@@ -30,6 +32,9 @@ LLM_UNAVAILABLE_REPLY = "I couldn't think that through just now. Try again in a 
 GITHUB_NOT_CONNECTED_REPLY = (
     "I need your GitHub connected before I can check that. Paste a token in your portal link."
 )
+CREDENTIALS_PRIVATE_ONLY_REPLY = "Manage your tools in a private chat with me."
+"""A group is the wrong room for one person's credential, so the intent is refused there and
+nothing is read from or written to the store."""
 
 SYNTHESIS_INSTRUCTIONS = """\
 You are Ambient AI, a phone contact replying in an SMS group chat.
@@ -70,14 +75,19 @@ async def run_mention(
     model: Model | str | None = None,
     recall_fn: RecallFn | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    private: bool = True,
+    credentials_fn: CredentialsFn | None = None,
 ) -> str:
     """Answer one @mention for one sender. Returns the SMS text; the gateway sends it.
 
+    `private` says the conversation is one-to-one (SMS always is; a Telegram private chat is);
+    `credentials_fn` is how the gateway applies a credential action it alone can perform.
     Keyword arguments are test seams: `model` replaces the LLM for every agent, `recall_fn`
     replaces the Cortex read, `transport` replaces the network under the GitHub client.
     """
     who = redact(sender.phone)
     recall = recall_fn or context_agent.recall
+    body = scrub(body)
 
     try:
         result = await build_orchestrator(model).run(
@@ -96,6 +106,15 @@ async def run_mention(
         needs_github=plan.needs_github,
         direct=plan.direct_reply is not None,
     )
+    if plan.credentials_action != "none":
+        if not private or credentials_fn is None:
+            log.emit("orchestration.reply", sender=who, path="credentials", status="refused")
+            return CREDENTIALS_PRIVATE_ONLY_REPLY
+        tool = plan.credentials_tool or "github"
+        reply = clip_sms(await credentials_fn(plan.credentials_action, tool))
+        log.emit("orchestration.reply", sender=who, chars=len(reply), path="credentials")
+        return reply
+
     if plan.direct_reply and not (plan.needs_memory or plan.needs_github):
         reply = clip_sms(plan.direct_reply)
         log.emit("orchestration.reply", sender=who, chars=len(reply), path="direct")

@@ -21,6 +21,7 @@ from ambient_ai.gateway.telegram import (
     CONTACT_KEYBOARD,
     REMOVE_KEYBOARD,
     TelegramRefused,
+    delete_message,
     get_me,
     send_telegram,
     set_webhook,
@@ -129,11 +130,20 @@ async def inbound_telegram(
         log.emit("webhook.ignored", transport="telegram", sender=who, to=chat, reason="no mention")
         return Response(status_code=200)
     log.emit("webhook.mention", transport="telegram", sender=who, to=chat, chars=len(text))
-    background.add_task(_run_handler, user_id, chat_id, text)
+    background.add_task(
+        _run_handler,
+        user_id,
+        chat_id,
+        text,
+        message.get("message_id"),
+        message.get("chat", {}).get("type") == "private",
+    )
     return Response(status_code=200)
 
 
-def _run_handler(user_id: int, chat_id: int, text: str) -> None:
+def _run_handler(
+    user_id: int, chat_id: int, text: str, message_id: int | None, private: bool
+) -> None:
     sender = resolve_telegram_sender(user_id)
     needs_number = is_provisional(sender)
     asked = False
@@ -155,8 +165,19 @@ def _run_handler(user_id: int, chat_id: int, text: str) -> None:
             log.emit("telegram.private_refused", sender=redact(sender), error=str(exc)[:60])
             send_telegram(chat_id, GROUP_FALLBACK_NOTE + body)
 
+    def forget_message() -> bool:
+        """Take the sender's own message off their screen once it has carried a secret."""
+        return message_id is not None and delete_message(chat_id, message_id)
+
     try:
-        handle_mention(sender, text, reply, link_reply=link_reply)
+        handle_mention(
+            sender,
+            text,
+            reply,
+            link_reply=link_reply,
+            private=private,
+            forget_message=forget_message,
+        )
         if needs_number and not asked:
             _ask_for_number(user_id, sender)
     except Exception as exc:  # noqa: BLE001 - the task must never raise into the server

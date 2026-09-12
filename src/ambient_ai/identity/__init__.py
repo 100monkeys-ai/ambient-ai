@@ -1,6 +1,7 @@
 from ambient_ai.identity.senders import (
     SenderProfile,
     adopt_telegram_contact,
+    clear_token,
     is_provisional,
     lookup_by_telegram_id,
     lookup_sender,
@@ -12,6 +13,7 @@ from ambient_ai.identity.senders import (
 __all__ = [
     "SenderProfile",
     "adopt_telegram_contact",
+    "clear_token",
     "is_provisional",
     "lookup_by_telegram_id",
     "lookup_sender",

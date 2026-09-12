@@ -67,6 +67,27 @@ def send_telegram(chat_id: int, text: str, *, reply_markup: dict[str, Any] | Non
     return int(result["message_id"])
 
 
+def delete_message(chat_id: int, message_id: int) -> bool:
+    """Delete a message the sender sent us. True when Telegram deleted it.
+
+    A bot may delete an incoming message in a private chat, which is how a pasted token stops
+    being visible on the sender's own screen. A refusal is returned rather than raised: the
+    sender has to be told the secret is still there so they can delete it themselves.
+    """
+    outbox = env("FAKE_TELEGRAM_OUTBOX")
+    if outbox:
+        with open(outbox, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"deleted": message_id, "chat_id": chat_id}) + "\n")
+        return True
+    try:
+        _api("deleteMessage", chat_id=chat_id, message_id=message_id)
+    except TelegramRefused as exc:
+        log.emit("telegram.delete_refused", to=redact(str(chat_id)), error=str(exc)[:60])
+        return False
+    log.emit("telegram.deleted", to=redact(str(chat_id)))
+    return True
+
+
 def get_me() -> dict[str, Any]:
     """The bot's own identity: at least `id` and `username`."""
     return _api("getMe")
